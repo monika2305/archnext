@@ -18,7 +18,7 @@ All geometry comes from the uploaded image. There is no sample building and no h
 Requirements: **Python 3.10** (the `py` launcher) and **Node.js 18+**.
 
 ```bat
-cd C:\Users\Dell\OneDrive\Desktop\ArchNext
+cd C:\Users\Dell\OneDrive\Desktop\Arch
 setup_windows.bat
 ```
 
@@ -54,20 +54,67 @@ The first upload takes a few seconds longer while the text-recognition models lo
 
 ---
 
-## Which parser is used
+## Detection: Standard, AI and Hybrid
 
-**The OpenCV structural parser in `backend/app/pipeline/` is used.** It is a rule-based computer-vision
-parser, not a pretrained AI model.
+ArchNext has three detection modes. All three feed the same geometry reconstruction, TopologyGuard, ScaleLock,
+3D Studio and GLB export, in the same image coordinates. The mode can be switched per plan in **Analysis →
+Detection**; switching re-runs the selected detector (image, OCR and the AI prediction are computed once).
 
-The candidate pretrained model (`Yytsi/floorplan-to-3d-walls`, a ResNet-34 UNet trained on CubiCasa5K)
-was evaluated but **not integrated**: the build environment's network policy blocked downloads from
-Hugging Face (HTTP 403), so its weights, preprocessing and inference could not be verified. Its
-upstream pipeline also expects CubiCasa-style SVG input rasterised with Cairo, not arbitrary raster plans. The
-parser keeps both geometry versions behind one interface, so a verified model can replace the detection step
-later. All evaluated configurations use the same OpenCV parser. The Hugging Face model is **not** active.
+| Mode | What detects walls, doors and windows |
+|---|---|
+| **Standard** | the rule-based OpenCV parser described below |
+| **AI** | the pretrained **CubiCasa5K** model (`hg_furukawa_original`, official weights `model_best_val_loss_var.pkl`, https://github.com/CubiCasa/CubiCasa5k), converted to ArchNext geometry |
+| **Hybrid** | AI walls first, plus OpenCV wall pieces the AI partly supports; door / window types and unnamed room types from the AI |
 
-Text recognition (room names and dimension labels) uses **RapidOCR** (`rapidocr-onnxruntime`), which runs
-on CPU and needs no system install.
+**Provisional default: Hybrid** when the model is installed, otherwise Standard (`ARCHNEXT_DETECTION=standard`
+forces Standard). If the model is missing or inference fails, AI and Hybrid fall back to Standard and the
+reason is shown. The model runs on the CPU: 17.4 M parameters, 208.7 MB weights, about 4 s to load once and
+about 2.5–3 s per plan (1024 px). Code and weights are **CC BY-NC 4.0** (non-commercial) and are downloaded
+into `%USERPROFILE%\.cache\archnext\cubicasa5k`, never into this repository.
+
+Install the optional model (once, into the existing environment):
+
+```bat
+cd backend
+.venv\Scripts\activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+python -m app.pipeline.cubicasa --download
+```
+
+### Preliminary comparison (not final accuracy)
+
+Same image, coordinates and evaluation rules for every mode; TopologyGuard and ScaleLock on.
+**5 real plans** from the CubiCasa5K *test* split with human annotations
+(`backend/eval/results/real_plans_preliminary.md`):
+
+| Mean over 5 real plans | Standard | AI | Hybrid |
+|---|---|---|---|
+| Rooms found (recall, IoU ≥ 0.5) | 0.08 | 0.61 | **0.63** |
+| Room boundary overlap (IoU) | 0.07 | **0.55** | 0.54 |
+| Wall pixel IoU | 0.22 | **0.65** | 0.64 |
+| Doors F1 / Windows F1 | 0.21 / 0.12 | **0.83 / 0.76** | 0.76 / 0.68 |
+| Wall ends connected | 0.45 | 0.71 | **0.71** |
+
+**3 synthetic plans** with a known scale (`synthetic_sanity.md`; synthetic, not real-world accuracy):
+room-size error Standard 0.34 %, AI 2.71 %, **Hybrid 0.42 %**; rooms found 0.91 / 0.92 / **0.95**.
+
+Why Hybrid is the provisional default: on the real plans it finds about as much as AI and far more than
+Standard (many real plans draw walls as thin double lines, which the OpenCV parser cannot read), and on plans
+with a known scale it keeps room sizes as accurate as Standard, which AI-only does not. AI-only is better on
+doors and windows. Caveats: only 5 + 3 plans; the AI was trained on CubiCasa5K (other plans, same drafting
+styles), which favours it on these real plans; CubiCasa5K annotations have no scale, so dimension accuracy on
+real plans is **not measured**. A larger run (`python -m eval.compare_modes --split test --n 40 --out
+real_plans`) has not been run yet.
+
+Visual comparisons (Original | Standard | AI | Hybrid; walls coloured correct / extra / missing against the
+human annotation): `backend/eval/results/compare_high_quality_architectural_2207.jpg` and `..._2536.jpg`.
+For your own plan (no ground truth, accuracy not measured): `python -m eval.visual_compare --image plan.png`.
+
+For a plan without ground truth, **Validation → Advanced details → Download draft (unverified)** exports the
+current detection as an answer-key draft. Correct it by hand and set `"verified": true`; unverified drafts are
+refused as ground truth.
+
+Text recognition (room names and dimension labels) uses **RapidOCR** (`rapidocr-onnxruntime`) on the CPU.
 
 ### How the parser works
 
@@ -250,7 +297,7 @@ repository):
 
 ### Tests run
 
-* `cd backend && python -m pytest -q`: **14 tests**:
+* `cd backend && python -m pytest -q`: **23 tests** (the CubiCasa5K tests skip when the model is not installed):
   * dimension parsing
   * TopologyGuard closes breaks but keeps openings
   * end-to-end reconstruction with auto scale under 3 % error
@@ -265,6 +312,11 @@ repository):
     geometry, checks and scale; fixes are kept per configuration; the comparison endpoint
   * **manual editing**: a dragged end snaps onto the wall and splits the merged room, a dry run changes
     nothing, Undo restores it; dragging a wall across a doorway is refused and leaves geometry unchanged
+  * **pretrained model**: the real weights load (17.4 M parameters) and the prediction aligns with the
+    drawn walls (overlap peaks at zero shift); a missing model is reported clearly
+  * **detection modes**: AI geometry lies on the AI prediction, switching modes reuses the cached prediction
+    and changes the geometry, fallback to Standard is reported, TopologyGuard / ScaleLock / comparison /
+    manual edit + Undo work in AI mode, the default-mode rule, unverified answer-key drafts are refused
 * Browser end-to-end (headless Chromium):
   * upload → Analysis → Fix preview → Apply → 3D Studio → GLB export
   * the exported GLB changes (the moved walls and the recomputed floors), and after Undo it is node-for-node
@@ -279,8 +331,8 @@ repository):
 
 ## Known limitations
 
-* Walls must be drawn as dark, solid (filled) strokes. Plans that draw walls only as thin double outlines,
-  or that draw interior walls in light grey, are only partly reconstructed (often exterior walls only).
+* Standard mode needs walls drawn as dark, solid (filled) strokes; thin double-line walls are only partly
+  reconstructed. AI and Hybrid handle them, but AI-only room sizes are less exact than Standard / Hybrid.
 * Curved walls are not reconstructed. Oblique walls are supported when they are drawn solid.
 * Door vs. window classification depends on door swings and glazing lines. Sliding doors usually come
   out as uncertain openings, which are flagged. Glazing-like gaps on purely interior walls are no longer
@@ -305,9 +357,14 @@ backend/
   app/pipeline/            preprocess, walls, structure (openings), rooms, topology (TopologyGuard),
                            scalelock, measure (dimension parsing), ocr, run (orchestration)
   app/pipeline/fixes.py    remaining-issue detection, safe fix proposals, apply
+  app/pipeline/cubicasa.py pretrained CubiCasa5K model: download, load, CPU inference
+  app/pipeline/ai_detect.py AI / Hybrid predictions -> ArchNext wall detection, openings, room types
   app/evaluation.py        ground-truth metrics and the four ablation configurations
   eval/synth.py            generated plans with exact ground truth
   eval/run_benchmark.py    four-way ablation -> eval/results/
+  eval/compare_modes.py    Standard vs AI vs Hybrid on real annotated plans (or synthetic) -> eval/results/
+  eval/cubicasa_testset.py CubiCasa5K samples + SVG annotations via HTTP range requests (cached)
+  eval/visual_compare.py   Original | Standard | AI | Hybrid picture
   tests/                   pytest suite
 frontend/
   src/views/               Upload, Analysis, 3D Studio, Validation
