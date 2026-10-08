@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  AlertTriangle, Box, Check, DoorOpen, Download, Footprints, Loader2, Maximize2, Minimize2, MousePointer2, Orbit, Redo2,
+  AlertTriangle, Box, Check, DoorOpen, Download, Footprints, Maximize2, Minimize2, MousePointer2, Orbit, Redo2,
   RotateCcw, Save, Scan, SquareDashed, Trash2, Undo2, X,
 } from 'lucide-react'
 import ModelViewer, { GLOW } from '../components/ModelViewer.jsx'
+import SaveBadge from '../components/SaveBadge.jsx'
 import PlanEditor from '../components/PlanEditor.jsx'
 import { api } from '../lib/api.js'
 import { downloadBlob, exportGLB } from '../lib/buildModel.js'
@@ -109,7 +110,7 @@ function Inspector({ result, geometry, selection, onPreview, onRename, busy, wal
   )
 }
 
-export default function Fix2BuildView({ result, onResult, selection, onSelect }) {
+export default function Fix2BuildView({ result, onResult, selection, onSelect, save, onPending, onFileSaved }) {
   const [tool, setTool] = useState('select')
   const [split, setSplit] = useState(50)
   const [full, setFull] = useState(null)            // '2d' | '3d' | null
@@ -134,6 +135,10 @@ export default function Fix2BuildView({ result, onResult, selection, onSelect })
   }, [])
   useEffect(() => () => clearTimeout(msgTimer.current), [])
   useEffect(() => { setPreview(null); setPending(null) }, [result])
+  // What is not committed yet (and would be lost by leaving): reported for the saved / unsaved indicator.
+  const uncommitted = busy ? 'saving' : preview ? 'preview' : draft ? 'drag' : null
+  useEffect(() => { onPending?.(uncommitted) }, [uncommitted, onPending])
+  useEffect(() => () => onPending?.(null), [onPending])
 
   const shown = preview?.geometry || draft || pending || result.geometry.corrected
 
@@ -171,11 +176,12 @@ export default function Fix2BuildView({ result, onResult, selection, onSelect })
     try { onResult(await (kind === 'undo' ? api.undoFix(result.id) : api.redo(result.id))); say(true, kind === 'undo' ? 'Undone' : 'Redone') }
     catch (e) { say(false, e.message) } finally { setBusy(false) }
   }, [result.id, onResult, say])
-  const save = async () => {
+  const saveFile = async () => {
     try {
       const proj = await api.saveProject(result.id)
       downloadBlob(new Blob([JSON.stringify(proj)], { type: 'application/json' }), `${(result.filename || 'plan').replace(/\.[^.]+$/, '')}.archnext.json`)
-      say(true, 'Project saved. Reopen it from the Upload page.')
+      onFileSaved?.(result.revision)
+      say(true, 'Project file downloaded. Open it from the Upload page, on any computer.')
     } catch (e) { say(false, e.message) }
   }
   const exportModel = async () => {
@@ -241,8 +247,9 @@ export default function Fix2BuildView({ result, onResult, selection, onSelect })
         <button className="btn-ghost btn-sm" onClick={() => startPreview({ op: 'reset' })} disabled={busy || !t.edited}
                 title="Back to the detected geometry (undoable)"><RotateCcw size={14} /><span className="hidden lg:inline">Reset</span></button>
         <div className="ml-auto flex items-center gap-1.5">
-          {busy && <Loader2 size={15} className="animate-spin text-accent" />}
-          <button className="btn-secondary btn-sm" onClick={save} title="Save the edited project to a file"><Save size={14} />Save</button>
+          <SaveBadge save={save} />
+          <button className="btn-secondary btn-sm" onClick={saveFile}
+                  title="Download the edited project as a file (.archnext.json). Edits are also autosaved."><Save size={14} />Save file</button>
           <button className="btn-primary btn-sm" onClick={exportModel} title="Export the current geometry as GLB"><Download size={14} />Export GLB</button>
         </div>
       </div>

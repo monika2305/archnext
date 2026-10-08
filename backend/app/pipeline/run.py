@@ -108,6 +108,7 @@ class PlanSession:
     redo: list = field(default_factory=list)       # states undone, re-applied by redo_user_fix
     room_names: dict = field(default_factory=dict) # room id -> name given by the user
     next_ids: dict = field(default_factory=dict)   # next free number per id prefix ("w", "o", "r")
+    revision: int = 0                              # bumped on every change; autosave and the UI compare it
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 

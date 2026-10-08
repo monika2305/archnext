@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, ArrowRight, Loader2, RefreshCw, Replace, Upload, X } from 'lucide-react'
+import { AlertTriangle, ArrowRight, FileClock, Loader2, PencilRuler, RefreshCw, Replace, Upload, X } from 'lucide-react'
+import { formatTime } from '../lib/session.js'
 
 const ACCEPT = ['image/png', 'image/jpeg', 'image/webp']
 const STAGES = ['Reading the drawing', 'Finding walls, rooms and openings', 'Checking structure', 'Measuring real sizes']
@@ -14,7 +15,55 @@ function useTicker(active) {
   return s
 }
 
-export default function UploadView({ file, preview, status, error, result, onFile, onGenerate, onOpen }) {
+// Autosaved plans the user can reopen (newest first; the one this browser used last first).
+function ContinueList({ result, offers, onReopen, restoring, restoreNote, onContinue, onOpen }) {
+  if (!result && !offers.length && !restoring && !restoreNote) return null
+  return (
+    <div className="mt-5 space-y-2" data-testid="continue">
+      {restoring && !result && (
+        <div className="card px-4 py-3 flex items-center gap-2.5 text-[13px]">
+          <Loader2 size={16} className="animate-spin text-accent" />Restoring your last session…
+        </div>
+      )}
+      {restoreNote && <p className="text-[12.5px] text-bad flex items-center gap-1.5"><AlertTriangle size={14} />{restoreNote}</p>}
+      {result && (
+        <div className="card px-4 py-3 flex items-center gap-3">
+          <PencilRuler size={18} className="text-accent shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-medium truncate">Open plan: {result.filename}</div>
+            <div className="text-[12px] text-ink-mute">{result.geometry.corrected.rooms.length} rooms
+              {result.autosave?.ok ? ` · autosaved ${formatTime(result.autosave.saved_at)}` : ''}</div>
+          </div>
+          <button className="btn-secondary btn-sm" onClick={onOpen}>Analysis</button>
+          <button className="btn-primary btn-sm" onClick={onContinue}>Continue editing <ArrowRight size={14} /></button>
+        </div>
+      )}
+      {offers.length > 0 && (
+        <div className="card divide-y divide-line">
+          <div className="px-4 py-2.5 text-[12px] font-medium text-ink-mute flex items-center gap-1.5">
+            <FileClock size={14} />{result ? 'Other recent plans' : 'Continue where you left off'} · autosaved on this computer
+          </div>
+          {offers.map((s) => (
+            <div key={s.id} className="px-4 py-2.5 flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium truncate">{s.filename || 'Plan'}</div>
+                <div className="text-[12px] text-ink-mute">
+                  {s.edits ? `${s.edits} edit${s.edits === 1 ? '' : 's'}` : 'No edits'} · {s.rooms} rooms · saved {formatTime(s.saved_at)}
+                </div>
+              </div>
+              <button className="btn-secondary btn-sm" onClick={() => onReopen(s.id)} disabled={!!restoring}>
+                {restoring === s.id ? <Loader2 size={14} className="animate-spin" /> : null}Reopen
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default function UploadView({ file, preview, status, error, result, onFile, onGenerate, onOpen,
+                                     offers = [], onReopen, restoring, restoreNote, onContinue }) {
   const input = useRef(null)
   const [drag, setDrag] = useState(false)
   const [localError, setLocalError] = useState('')
@@ -41,12 +90,12 @@ export default function UploadView({ file, preview, status, error, result, onFil
 
   if (!file) {
     return (
-      <div className="h-full grid place-items-center p-8">
+      <div className="h-full overflow-auto"><div className="min-h-full grid place-items-center p-8">
         <div className="w-full max-w-3xl">
           <h1 className="text-[28px] font-semibold tracking-tight text-center">Turn a floor plan into 3D</h1>
           <p className="text-[14px] text-ink-mute text-center mt-1.5 mb-7">Every Line Becomes a Space.</p>
           <div {...dropProps} onClick={() => input.current?.click()}
-            className={`cursor-pointer rounded-3xl border-2 border-dashed h-[52vh] min-h-[300px] grid place-items-center text-center transition-all
+            className={`cursor-pointer rounded-3xl border-2 border-dashed ${result || offers.length ? 'h-[34vh] min-h-[220px]' : 'h-[52vh] min-h-[300px]'} grid place-items-center text-center transition-all
               ${drag ? 'border-accent bg-accent-soft/60 scale-[1.01]' : 'border-line bg-white hover:border-accent/50 hover:bg-accent-soft/20'}`}>
             <div>
               <div className="w-16 h-16 rounded-2xl bg-accent text-white grid place-items-center mx-auto mb-5 shadow-float">
@@ -58,8 +107,10 @@ export default function UploadView({ file, preview, status, error, result, onFil
           </div>
           {fileInput}
           {localError && <p className="mt-3 text-[12.5px] text-bad flex items-center justify-center gap-1.5"><AlertTriangle size={14} />{localError}</p>}
+          <ContinueList result={result} offers={offers} onReopen={onReopen} restoring={restoring} restoreNote={restoreNote}
+                        onContinue={onContinue} onOpen={onOpen} />
         </div>
-      </div>
+      </div></div>
     )
   }
 

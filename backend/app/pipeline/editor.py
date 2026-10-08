@@ -419,24 +419,31 @@ def _inside_point(labels: np.ndarray, k: int) -> list[float]:
     return [float(xs[i]), float(ys[i])]
 
 
-def export_project(sess) -> dict:
-    """Everything needed to reopen the edited building: original image, settings and canonical geometry."""
+def export_project(sess, image: bool = True) -> dict:
+    """Everything needed to reopen the edited building: original image, settings, canonical geometry, names and
+    the ScaleLock result in force (so measurements reopen exactly as they were, also when the scale is automatic)."""
     v = sess.corrected
     return rn._plain({
-        "format": PROJECT_FORMAT, "version": 1, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "filename": sess.filename, "image_b64": base64.b64encode(sess.data).decode("ascii"),
+        "format": PROJECT_FORMAT, "version": 2, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "id": sess.id, "revision": sess.revision, "edits": sum(1 for f in sess.fix_log if f.get("kind") != "reopen"),
+        "filename": sess.filename, **({"image_b64": base64.b64encode(sess.data).decode("ascii")} if image else {}),
         "config": dict(sess.config),
         "walls": [w.to_dict() for w in v.walls],
         "user_openings": [{k: o[k] for k in ("id", "type", "hosts")} for o in v.openings if o.get("source") == "user"],
         "rooms": [{"id": r["id"], "point": _inside_point(v.labels, k + 1), "name": sess.room_names.get(r["id"])}
                   for k, r in enumerate(v.rooms)],
-        "scale": sess.scale if sess.scale["status"] == "manual" else None,
+        "scale": sess.scale,
+        "measurements": sess.measurements, "auto_scale": sess.auto_scale,
+        "fix_log": sess.fix_log,
         "next_ids": dict(sess.next_ids),
     })
 
 
-def import_project(proj: dict):
-    """Re-create a session from a saved project (detection runs once; the saved geometry then replaces it)."""
+def import_project(proj: dict, plan_id: str | None = None):
+    """Re-create a session from a saved project (detection runs once; the saved geometry then replaces it).
+
+    ``plan_id`` keeps the plan's id (autosave restore after a backend restart); a reopened file gets a new one.
+    The undo history is not part of a project: it starts empty."""
     if not isinstance(proj, dict) or proj.get("format") != PROJECT_FORMAT:
         raise ValueError("this is not an ArchNext project file")
     data = base64.b64decode(proj["image_b64"])
@@ -471,10 +478,19 @@ def import_project(proj: dict):
     sess.room_names = names
     rn.apply_room_names(sess, version)
     sess.corrected = version
-    if proj.get("scale"):
+    # ScaleLock: the scale and measurements in force when saved (version 1 files only kept a manual scale).
+    if proj.get("scale") and (proj.get("version", 1) >= 2 or proj["scale"].get("status") == "manual"):
         sess.scale = proj["scale"]
-    sess.edited = True
-    sess.fix_log = [{"check": "manual", "message": "Project reopened", "at": [0.0, 0.0], "walls": [], "kind": "manual"}]
+    if "measurements" in proj and "auto_scale" in proj:
+        sess.measurements, sess.auto_scale = proj["measurements"], proj["auto_scale"]
+    if plan_id:
+        sess.id = plan_id
+        sess.revision = int(proj.get("revision", 0))
+    sess.fix_log = list(proj.get("fix_log") or [])
+    if plan_id is None:
+        sess.fix_log.append({"check": "manual", "message": "Project reopened", "at": [0.0, 0.0], "walls": [],
+                             "kind": "reopen"})
+    sess.edited = bool(sess.fix_log)
     sess.history.clear()
     sess.redo.clear()
     rn.refresh_issues(sess)

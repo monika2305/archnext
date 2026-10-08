@@ -28,6 +28,12 @@ export const api = {
     fd.append('file', file)
     return request('/api/plans', { method: 'POST', body: fd })
   },
+  getPlan(id) {
+    return request(`/api/plans/${encodeURIComponent(id)}`)
+  },
+  recentSessions(limit = 5) {
+    return request(`/api/sessions/recent?limit=${limit}`)
+  },
   calibrate(id, p1, p2, distance, unit) {
     return request(`/api/plans/${id}/calibration`, json({ p1, p2, distance, unit }))
   },

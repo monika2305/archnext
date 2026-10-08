@@ -1,4 +1,5 @@
 import { Box, FileUp, Layers, PencilRuler, Plus, ShieldCheck } from 'lucide-react'
+import SaveBadge from './SaveBadge.jsx'
 
 const TABS = [
   { key: 'upload', label: 'Upload', icon: FileUp },
@@ -17,7 +18,7 @@ function ConfigDot({ on, label }) {
   )
 }
 
-export default function Header({ view, onView, hasResult, config, onNew }) {
+export default function Header({ view, onView, hasResult, config, onNew, save }) {
   return (
     <header className="h-14 shrink-0 bg-white/90 backdrop-blur border-b border-line flex items-center px-3 lg:px-5 gap-3 lg:gap-6">
       <div className="flex items-center gap-2.5 xl:min-w-[230px] shrink-0">
@@ -56,6 +57,7 @@ export default function Header({ view, onView, hasResult, config, onNew }) {
             <ConfigDot on={config.scale_lock} label="ScaleLock" />
           </button>
         )}
+        {hasResult && <SaveBadge save={save} compact />}
         {hasResult && (
           <button className="btn-secondary btn-sm" onClick={onNew} title="New plan"><Plus size={14} /><span className="hidden lg:inline">New plan</span></button>
         )}

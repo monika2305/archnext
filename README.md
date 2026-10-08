@@ -306,7 +306,7 @@ repository):
 
 ### Tests run
 
-* `cd backend && python -m pytest -q`: **38 tests** (the CubiCasa5K tests skip when the model is not installed):
+* `cd backend && python -m pytest -q`: **49 tests** (the CubiCasa5K tests skip when the model is not installed):
   * dimension parsing
   * TopologyGuard closes breaks but keeps openings
   * end-to-end reconstruction with auto scale under 3 % error
@@ -331,9 +331,14 @@ repository):
     coverage; hatched-wall holes are restored up to a real door; Hybrid ignores noisy OpenCV output
   * **Fix2Build**: every editing command (add / move / delete wall, wall end, thickness, height, add / move /
     resize / retype / delete opening, rename, reset), stable ids, undo / redo, preview, save + reopen, API
-* `cd frontend && npm test`: **7 tests** (3D meshes tagged with object ids for picking, per-wall height and metric
+  * **saving and restoring**: every change autosaved with its revision; a backend restart / evicted session
+    restores the same walls, openings, room ids and names, scale and measurements; ids are not reused after a
+    restore; undo / redo after a restore; manual and automatic scale restored exactly; reopened project files get
+    their own autosave; a failed autosave keeps the edit and reports it; autosave off; unsafe ids rejected; the
+    web-app route never serves files outside the frontend build
+* `cd frontend && npm test`: **13 tests** (3D meshes tagged with object ids for picking, per-wall height and metric
   size in 3D, fixed 3D frame while editing, room bounds for camera focus, 2D room hit-testing, a room's doors and
-  windows, stale selections dropped)
+  windows, stale selections dropped; saved / unsaved state, when to warn, refresh restore, reopen offers)
 * Browser end-to-end (headless Chromium):
   * upload → Analysis → Fix preview → Apply → 3D Studio → GLB export
   * the exported GLB changes (the moved walls and the recomputed floors), and after Undo it is node-for-node
@@ -377,7 +382,7 @@ panels, Analysis, Validation, 3D Studio and the GLB export follow it.
 | Wall thickness / height, opening width, door ↔ window, delete | inspector under the plan → **Preview → Apply / Cancel** |
 | Rename a room | inspector → name → Enter |
 | Undo / Redo / Reset | Ctrl+Z / Ctrl+Y (or the toolbar); *Reset* returns to the detected geometry (undoable) |
-| Save / reopen | *Save* downloads `name.archnext.json`; drop it on the Upload page and *Open project* |
+| Save / reopen | automatic (see *Saving and restoring* below); *Save file* also downloads `name.archnext.json`, which opens on any computer from the Upload page (*Open project*) |
 | Export | *Export GLB* writes the current geometry (edits included, highlights excluded) |
 
 Shortcuts: V select, W wall, D door, N window, Delete, Enter (apply preview), Esc (cancel / clear), F (refocus).
@@ -408,7 +413,26 @@ plans an edit takes about 1 s on the server; during a drag the panels show a loc
 update on release). Moving whole walls with their neighbours works for horizontal / vertical walls; oblique walls
 move alone. Only openings between two collinear wall pieces can be moved or resized (corner openings can be
 retyped or removed). A custom room name stays with the room id, so it is lost if an edit changes the room so much
-that it gets a new id. Uploaded plans live in memory: use *Save* to keep work across backend restarts.
+that it gets a new id.
+
+**Saving and restoring.** Every change to a plan (Fix2Build edit, undo / redo, TopologyGuard fix, calibration,
+mode switch) is autosaved by the backend as soon as it is applied: a project file per plan in
+`backend/data/sessions/` (git-ignored; `ARCHNEXT_DATA_DIR` moves it, `ARCHNEXT_AUTOSAVE=0` turns it off; the 50
+most recent plans are kept). Writes are atomic, so a crash never leaves a half-written project.
+* **Browser refresh**: the tab reopens the same plan on the same page, undo history included.
+* **Backend restart** (or a plan dropped from memory): the plan is rebuilt from its autosave the first time it is
+  asked for (a few seconds; detection runs once, then the saved geometry replaces it) with the same wall, opening
+  and room ids, room names, wall heights, door / window types, scale and ScaleLock measurements.
+* **New visit / New plan**: the Upload page lists the recent autosaved plans (*Continue where you left off*);
+  *Reopen* brings one back.
+* **Indicator**: header and Fix2Build toolbar show *All changes saved*, *Saving…*, *Unsaved preview* (a previewed
+  change not applied yet) or *Not saved* (autosave failed; the edit itself is kept, use *Save file*).
+* **Warnings**: leaving the page, *New plan*, choosing another file or leaving Fix2Build asks first when something
+  would be lost (an unapplied preview, an edit in flight, a failed autosave, or, with autosave off, edits since
+  the last *Save file*). Nothing is asked when everything is saved, since the plan stays reopenable.
+* Limitations: the undo history is kept in memory only, so after a backend restart Undo starts empty (new edits
+  undo normally). Only the current TopologyGuard / ScaleLock / detection configuration of a plan is restored.
+  Autosaves contain the uploaded plan image and stay on the computer running the backend.
 
 **Review 2 demo.** Upload a plan → *Generate 3D* → *Fix2Build* → click a bedroom in 2D (it glows in 3D, the camera
 flies to it, the card shows name and area) → drag one of its walls (3D wall moves, area recalculates) → Ctrl+Z
@@ -424,6 +448,7 @@ backend/
                            scalelock, measure (dimension parsing), ocr, run (orchestration)
   app/pipeline/fixes.py    remaining-issue detection, safe fix proposals, apply
   app/pipeline/editor.py   Fix2Build editing commands, project save / reopen
+  app/store.py             autosave: one project file per plan, restore after refresh / restart
   app/pipeline/cubicasa.py pretrained CubiCasa5K model: download, load, CPU inference
   app/pipeline/ai_detect.py AI / Hybrid predictions -> ArchNext wall detection, openings, room types
   app/evaluation.py        ground-truth metrics and the four ablation configurations
@@ -439,5 +464,6 @@ frontend/
                            issue list, charts, walkthrough
   src/views/Fix2BuildView  side-by-side workspace, inspector, undo / redo, save, export
   src/lib/buildModel.js    procedural Three.js building + GLB export source
+  src/lib/session.js       saved / unsaved state, leave / replace warnings, last-session restore
 samples/                   generated plans + annotation files
 ```
