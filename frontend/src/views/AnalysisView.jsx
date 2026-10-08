@@ -3,13 +3,14 @@ import { AlertTriangle, ArrowRight, Check, Crosshair, Loader2, Minus, PenLine, P
 import BlueprintOverlay, { OPENING_COLOR } from '../components/BlueprintOverlay.jsx'
 import IssueList from '../components/IssueList.jsx'
 import ScaleBadge from '../components/ScaleBadge.jsx'
+import DetectionSelect from '../components/DetectionSelect.jsx'
 import { api } from '../lib/api.js'
 
 const LAYERS = [
   ['walls', 'Walls', '#4F6578'], ['rooms', 'Rooms', '#C9B79A'], ['openings', 'Doors & windows', OPENING_COLOR.door], ['issues', 'Issues', '#B07A2A'],
 ]
 
-export default function AnalysisView({ result, onResult, onStudio }) {
+export default function AnalysisView({ result, onResult, onStudio, onConfig, configBusy, configError }) {
   const [layers, setLayers] = useState({ walls: true, rooms: true, openings: true, issues: true })
   const [selected, setSelected] = useState(null)
   const [zoom, setZoom] = useState(1)
@@ -26,7 +27,7 @@ export default function AnalysisView({ result, onResult, onStudio }) {
   const [showNotes, setShowNotes] = useState(false)
   const noticeTimer = useRef(null)
 
-  const cfgKey = `${result.config?.topology_guard}-${result.config?.scale_lock}`
+  const cfgKey = `${result.config?.detection}-${result.config?.topology_guard}-${result.config?.scale_lock}`
   useEffect(() => { exitMode(); setSelected(null) }, [cfgKey]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => clearTimeout(noticeTimer.current), [])
 
@@ -173,6 +174,8 @@ export default function AnalysisView({ result, onResult, onStudio }) {
       </section>
 
       <aside className="card min-h-0 flex flex-col overflow-hidden">
+        <DetectionSelect result={result} onConfig={onConfig} busy={configBusy || busy || (!!mode && mode !== 'edit')} />
+        {configError && <p className="px-4 pt-2 text-[11.5px] text-bad">{configError}</p>}
         <div className="grid grid-cols-5 border-b border-line">
           {[['Rooms', g.rooms], ['Walls', g.walls], ['Doors', g.doors], ['Windows', g.windows], ['Issues', tgOn ? openIssues : '—']].map(([l, v]) => (
             <div key={l} className="py-3 text-center">

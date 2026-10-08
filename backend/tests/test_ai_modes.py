@@ -68,3 +68,43 @@ def test_detection_mode_api():
     assert r.json()["detection"]["used"] in ("ai", "standard")
     bad = client.post(f"/api/plans/{d['id']}/config", json={"topology_guard": True, "scale_lock": True, "detection": "x"})
     assert bad.status_code == 422
+
+
+@needs_model
+def test_existing_tools_work_in_ai_mode():
+    from app.pipeline.run import compare_configs, edit_wall_end, undo_user_fix
+
+    sess = process_plan(PNG, "p.png", detection="ai")
+    # Ablation switches stay within the AI detector and genuinely change the result.
+    set_config(sess, False, False)
+    res = session_result(sess)
+    assert res["config"] == {"topology_guard": False, "scale_lock": False, "detection": "ai"}
+    assert res["scale"]["status"] == "estimated"
+    set_config(sess, True, True)
+    res = session_result(sess)
+    assert res["detection"]["used"] == "ai" and res["scale"]["status"] in ("auto", "estimated")
+    cmp = compare_configs(sess)
+    assert set(cmp["configs"]) == {"baseline", "topologyguard_only", "scalelock_only", "full"}
+    # Manual wall-end editing and Undo on AI geometry.
+    before = res["geometry"]["corrected"]["walls"]
+    w = max((x for x in sess.corrected.walls if x.orient == "h"), key=lambda x: x.length)
+    x0 = min(w.x1, w.x2)
+    end = 0 if w.x1 <= w.x2 else 1
+    check = edit_wall_end(sess, w.id, end, x0 + 0.25 * w.length, w.y1, dry_run=True)
+    if check["ok"]:
+        edit_wall_end(sess, w.id, end, x0 + 0.25 * w.length, w.y1)
+        assert session_result(sess)["geometry"]["corrected"]["walls"] != before
+        undo_user_fix(sess)
+    assert session_result(sess)["geometry"]["corrected"]["walls"] == before
+
+
+def test_annotation_draft_is_never_scored_until_verified():
+    d = client.post("/api/plans", files={"file": ("p.png", PNG, "image/png")}).json()
+    draft = client.get(f"/api/plans/{d['id']}/annotation-draft").json()
+    assert draft["verified"] is False and draft["rooms"] and "DRAFT" in draft["note"]
+    import json
+    r = client.post(f"/api/plans/{d['id']}/evaluate", files={"file": ("a.json", json.dumps(draft), "application/json")})
+    assert r.status_code == 400 and "unverified" in r.json()["detail"]
+    draft["verified"] = True
+    r = client.post(f"/api/plans/{d['id']}/evaluate", files={"file": ("a.json", json.dumps(draft), "application/json")})
+    assert r.status_code == 200

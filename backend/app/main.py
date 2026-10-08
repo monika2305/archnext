@@ -18,8 +18,9 @@ from pydantic import BaseModel, Field
 from .evaluation import evaluate_session
 from .pipeline import cubicasa
 from .pipeline.preprocess import PlanImageError
-from .pipeline.run import (DEFAULT_DETECTION, PlanSession, apply_manual_scale, apply_user_fix, compare_configs,
-                           edit_wall_end, process_plan, reset_scale, session_result, set_config, undo_user_fix)
+from .pipeline.run import (DEFAULT_DETECTION, PlanSession, annotation_draft, apply_manual_scale, apply_user_fix,
+                           compare_configs, edit_wall_end, process_plan, reset_scale, session_result, set_config,
+                           undo_user_fix)
 
 log = logging.getLogger("archnext")
 logging.basicConfig(level=logging.INFO)
@@ -187,6 +188,14 @@ def compare(plan_id: str):
     sess = _get(plan_id)
     with sess.lock:
         return compare_configs(sess)
+
+
+@app.get("/api/plans/{plan_id}/annotation-draft")
+def get_annotation_draft(plan_id: str):
+    """Unverified answer-key draft from the current detection, for manual review."""
+    sess = _get(plan_id)
+    with sess.lock:
+        return annotation_draft(sess)
 
 
 @app.post("/api/plans/{plan_id}/evaluate")

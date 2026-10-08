@@ -128,6 +128,33 @@ def hybrid_walls(pred: cc.AIPrediction, cv_det: WallDetection | None, soft: np.n
                          kernel=cv_det.kernel, walls=walls, solids=solids, warnings=list(cv_det.warnings))
 
 
+def hybrid_ai_base(pred: cc.AIPrediction, cv_det: WallDetection | None, min_support: float = 0.3) -> WallDetection:
+    """AI walls first; OpenCV adds only wall pieces that the AI also partly sees as wall (it under-segmented
+    them). Thickness follows the AI walls so thin and thick walls both survive."""
+    if cv_det is None:
+        return ai_walls(pred)
+    raw = pred.wall_mask
+    t, t_max = _mask_thickness(raw)
+    if t <= 0:
+        raise ValueError("The AI model found no walls in this image.")
+    ai = _cut_openings(raw, pred.icons, t)
+    k = int(max(3, round(t)))
+    weak = cv2.dilate((pred.wall_prob > 0.05).astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cv_det.mask, connectivity=8)
+    keep = np.zeros(n, bool)
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        comp = labels[y:y + h, x:x + w] == i
+        keep[i] = weak[y:y + h, x:x + w][comp].mean() >= min_support
+    cv_part = keep[labels] & (_cut_openings(np.full_like(raw, 255), pred.icons, t) > 0)
+    mask = _drop_small(np.where((ai > 0) | cv_part, 255, 0).astype(np.uint8), t)
+    walls, solids = vectorise(mask, t, max(t_max, t), min_thick=0.3)
+    if len(walls) < 4:
+        raise ValueError("Too few walls after combining OpenCV and AI detections.")
+    return WallDetection(mask=mask, thickness=t, max_thickness=max(t_max, t), thin_width=cv_det.thin_width,
+                         kernel=cv_det.kernel, walls=walls, solids=solids, warnings=list(cv_det.warnings))
+
+
 def retype_openings(openings: list[dict], pred: cc.AIPrediction, t: float) -> None:
     """Use the AI icon map to decide door vs window for every detected gap opening (in place)."""
     for o in openings:

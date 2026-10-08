@@ -157,6 +157,9 @@ def run_ablation(data: bytes, gt_raw: dict, inputs=None) -> dict:
 def evaluate_session(sess, gt_raw: dict) -> dict:
     if not isinstance(gt_raw, dict) or not isinstance(gt_raw.get("rooms"), list):
         raise ValueError("the annotation must contain a 'rooms' list")
+    if gt_raw.get("verified") is False:
+        raise ValueError("this is an unverified draft. Review it against the drawing and set \"verified\": true "
+                         "before using it as ground truth")
     configs = run_ablation(sess.data, gt_raw, getattr(sess, "inputs", None))
     return {
         "source": "current_plan",

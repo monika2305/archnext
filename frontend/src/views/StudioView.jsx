@@ -198,6 +198,7 @@ export default function StudioView({ result }) {
           {mode === 'walk' ? 'W A S D to move · drag to look' : 'Drag to orbit · scroll to zoom'}
         </div>
         <div className="absolute right-3 bottom-3 glass rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft flex items-center gap-2.5">
+          <span>{{ ai: 'AI', hybrid: 'Hybrid' }[result.config?.detection] || 'Standard'}</span><span className="text-line">|</span>
           <span className="tabular-nums">{g.rooms.length} room{g.rooms.length === 1 ? '' : 's'}</span><span className="text-line">|</span>
           <span className="tabular-nums">{fmtM2(area)}</span>
           <ScaleBadge scale={scale} short />

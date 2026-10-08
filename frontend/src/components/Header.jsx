@@ -50,6 +50,7 @@ export default function Header({ view, onView, hasResult, config, onNew }) {
         {config && (
           <button onClick={() => onView('validation')} title="Change on the Validation page"
                   className="hidden xl:flex items-center gap-3 text-[11.5px] px-2.5 h-8 rounded-lg hover:bg-paper">
+            <span className="text-ink-soft font-medium">{{ ai: 'AI', hybrid: 'Hybrid' }[config.detection] || 'Standard'}</span>
             <ConfigDot on={config.topology_guard} label="TopologyGuard" />
             <ConfigDot on={config.scale_lock} label="ScaleLock" />
           </button>

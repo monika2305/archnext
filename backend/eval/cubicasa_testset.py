@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import zipfile
 from pathlib import Path
 from xml.dom import minidom
@@ -34,10 +35,23 @@ class HTTPRangeFile(io.RawIOBase):
     def __init__(self, url: str, block: int = 1 << 20):
         self.url, self.block, self.pos = url, block, 0
         self.client = httpx.Client(follow_redirects=True, timeout=120)
-        r = self.client.head(url)
-        r.raise_for_status()
-        self.size = int(r.headers["content-length"])
+        self.size = self._remote_size()
         self._cache: dict[int, bytes] = {}
+
+    def _remote_size(self) -> int:
+        """Total size; Zenodo occasionally times out, so retry and fall back to a 1-byte range request."""
+        for attempt in range(6):
+            try:
+                r = self.client.get(self.url, headers={"Range": "bytes=0-0"})
+                if r.status_code == 206 and "content-range" in r.headers:
+                    return int(r.headers["content-range"].split("/")[-1])
+                r = self.client.head(self.url)
+                if r.status_code == 200:
+                    return int(r.headers["content-length"])
+            except httpx.HTTPError:
+                pass
+            time.sleep(5 * (attempt + 1))
+        raise OSError("Zenodo is not reachable right now; try again later.")
 
     def seekable(self):
         return True
@@ -56,14 +70,15 @@ class HTTPRangeFile(io.RawIOBase):
         if i not in self._cache:
             a = i * self.block
             b = min(self.size, a + self.block) - 1
-            for _ in range(4):
+            for attempt in range(6):
                 try:
                     r = self.client.get(self.url, headers={"Range": f"bytes={a}-{b}"})
                     if r.status_code == 206:
                         self._cache[i] = r.content
                         break
                 except httpx.HTTPError:
-                    continue
+                    pass
+                time.sleep(3 * (attempt + 1))
             else:
                 raise OSError("range request failed")
         return self._cache[i]

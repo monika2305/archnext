@@ -31,6 +31,10 @@ RESULTS = Path(__file__).resolve().parent / "results"
 MODES = ["standard", "ai_raw", "ai", "hybrid"]
 LABEL = {"standard": "Standard (OpenCV)", "ai_raw": "AI model (raw)", "ai": "AI + TopologyGuard/ScaleLock",
          "hybrid": "Hybrid"}
+# Hybrid variants for tuning on the validation split (all share OCR and the AI prediction).
+# hybrid_cut / hybrid_nodrop / hybrid_noadd scored the same as "hybrid" on the first validation plans and were
+# dropped to keep runs short; hybrid_aibase starts from the AI walls instead of the OpenCV walls.
+VARIANTS = {"hybrid_aibase": {}}
 
 
 def wall_raster(walls: list[Wall], solids: list[dict], shape, openings: list[dict] = ()) -> np.ndarray:
@@ -63,29 +67,41 @@ def wall_scores(pred: np.ndarray, gt: np.ndarray, tol: int) -> dict:
 
 
 def make_inputs(base: PlanInputs, data: bytes, mode: str, hybrid_kw: dict) -> PlanInputs:
-    if mode == "standard":
+    """``base`` is the AI-mode inputs (image, OCR, OpenCV parse and AI prediction computed once)."""
+    if mode in ("ai", "ai_raw"):
         return base
-    inp = prepare_inputs(data, "ai" if mode in ("ai", "ai_raw") else "hybrid", base=base)
-    base.ai = inp.ai
-    if mode == "hybrid" and hybrid_kw and inp.detection.get("used") == "hybrid":
-        inp.det = ad.hybrid_walls(inp.ai, base.cv_det, inp.img.soft, **hybrid_kw)
+    if mode == "standard":
+        return prepare_inputs(data, "standard", base=base)   # raises if OpenCV finds no walls
+    inp = prepare_inputs(data, "hybrid", base=base)
+    kw = VARIANTS.get(mode, hybrid_kw)
+    if mode == "hybrid_aibase" and inp.detection.get("used") == "hybrid":
+        inp.det = ad.hybrid_ai_base(inp.ai, base.cv_det)
+    elif kw and inp.detection.get("used") == "hybrid":
+        inp.det = ad.hybrid_walls(inp.ai, base.cv_det, inp.img.soft, **kw)
     return inp
 
 
 def run_plan(folder: Path, hybrid_kw: dict) -> dict:
-    data = (folder / "F1_scaled.png").read_bytes()
-    gt_raw = annotation(folder / "model.svg")
-    out = {"plan": folder.name, "gt": {k: len(gt_raw[k]) for k in ("rooms", "doors", "windows", "walls")}}
-    base = None
+    return run_one((folder / "F1_scaled.png").read_bytes(), annotation(folder / "model.svg"), folder.name, hybrid_kw)
+
+
+def run_one(data: bytes, gt_raw: dict, name: str, hybrid_kw: dict) -> dict:
+    out = {"plan": name, "gt": {k: len(gt_raw.get(k, [])) for k in ("rooms", "doors", "windows", "walls")}}
+    try:
+        base = prepare_inputs(data, "ai")
+    except ValueError as exc:          # neither detector could build anything from this image
+        for mode in MODES:
+            out[mode] = {"failed": str(exc)}
+        return out
     for mode in MODES:
         t0 = time.time()
         try:
-            if base is None:
-                base = prepare_inputs(data, "standard")
             inp = make_inputs(base, data, mode, hybrid_kw)
             if mode != "standard" and inp.detection.get("used") == "standard":
+                if inp.detection.get("fallback", "").startswith("AI detection failed"):
+                    raise ValueError(inp.detection["fallback"])
                 raise RuntimeError(f"fell back to Standard: {inp.detection.get('fallback')}")
-            sess = process_plan(data, folder.name, topology_guard=(mode != "ai_raw"), scale_lock=True, inputs=inp)
+            sess = process_plan(data, name, topology_guard=(mode != "ai_raw"), scale_lock=True, inputs=inp)
         except ValueError as exc:   # the pipeline could not build a model from this plan
             out[mode] = {"failed": str(exc)}
             continue
@@ -93,22 +109,30 @@ def run_plan(folder: Path, hybrid_kw: dict) -> dict:
         f = sess.image.resample
         gt = _scale_gt(gt_raw, f)
         res = evaluate_version(v.rooms, v.openings, v.stats(), sess.scale["meters_per_px"], gt)
-        gt_w = np.zeros(sess.image.dark.shape, np.uint8)
-        for w in gt_raw["walls"]:
-            cv2.fillPoly(gt_w, [np.round(np.array(w["polygon"]) * f).astype(np.int32)], 1)
-        res.update(wall_scores(wall_raster(v.walls, v.solids, gt_w.shape, v.openings), gt_w > 0, tol=max(2, round(0.5 * sess.thickness))))
+        if gt_raw.get("walls"):
+            gt_w = np.zeros(sess.image.dark.shape, np.uint8)
+            for w in gt_raw["walls"]:
+                cv2.fillPoly(gt_w, [np.round(np.array(w["polygon"]) * f).astype(np.int32)], 1)
+            res.update(wall_scores(wall_raster(v.walls, v.solids, gt_w.shape, v.openings), gt_w > 0,
+                                   tol=max(2, round(0.5 * sess.thickness))))
+        else:
+            res.update(wall_iou=None, wall_precision=None, wall_recall=None)
         res["seconds"] = round(time.time() - t0, 2)
         res["ai_seconds"] = inp.detection.get("ai_seconds")
         out[mode] = {k: res[k] for k in ("room_recall", "room_precision", "room_iou_all", "structural_consistency",
                                          "wall_iou", "wall_precision", "wall_recall", "seconds", "ai_seconds",
                                          "rooms_predicted", "rooms_actual")}
+        out[mode]["dimension_error_pct"] = res.get("dimension_error_pct")
+        out[mode]["scale_error_pct"] = res.get("scale_error_pct")
+        out[mode]["scale_status"] = sess.scale["status"]
         out[mode]["doors_f1"] = res["doors"]["f1"]
         out[mode]["windows_f1"] = res["windows"]["f1"]
     return out
 
 
 METRICS = ["room_recall", "room_precision", "room_iou_all", "wall_iou", "wall_precision", "wall_recall", "doors_f1",
-           "windows_f1", "structural_consistency"]
+           "windows_f1", "structural_consistency", "dimension_error_pct", "scale_error_pct"]
+NO_ZERO_FILL = {"structural_consistency", "dimension_error_pct", "scale_error_pct"}
 
 
 def summarise(rows: list[dict]) -> dict:
@@ -120,7 +144,7 @@ def summarise(rows: list[dict]) -> dict:
         agg = {"plans": len(rows), "failed": failed}
         for m in METRICS:
             vals = [r[mode][m] for r in rows if "failed" not in r[mode] and r[mode][m] is not None]
-            if m != "structural_consistency":
+            if m not in NO_ZERO_FILL and vals:
                 vals += [0.0] * failed
             agg[m] = round(float(np.mean(vals)), 4) if vals else None
         secs = [r[mode]["seconds"] for r in rows if "failed" not in r[mode]]
@@ -135,21 +159,29 @@ def summarise(rows: list[dict]) -> dict:
 
 def markdown(summary: dict, args) -> str:
     head = ["Metric (mean over plans)"] + [LABEL[m] for m in MODES]
-    lines = [f"Real floor plans: CubiCasa5K `{args.split}` split, first {args.n} plans after offset {args.offset}, "
-             "human ground truth. Same image, coordinates and rules for every mode.", "",
+    src = (f"SYNTHETIC plans (eval/synth.py seeds {args.offset}-{args.offset + args.n - 1}), exact ground truth incl. "
+           "scale. Synthetic results do not establish real-world accuracy." if args.synthetic else
+           f"Real floor plans: CubiCasa5K `{args.split}` split, first {args.n} plans after offset {args.offset}, "
+           "human ground truth.")
+    lines = [src + " Same image, coordinates and rules for every mode.", "",
              "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     names = {"room_recall": "Rooms found (recall, IoU≥0.5)", "room_precision": "Rooms correct (precision)",
              "room_iou_all": "Room boundary overlap (IoU, missed = 0)", "wall_iou": "Wall pixel IoU",
              "wall_precision": "Wall precision (tolerant)", "wall_recall": "Wall recall (tolerant)",
-             "doors_f1": "Doors F1", "windows_f1": "Windows F1", "structural_consistency": "Wall ends connected"}
+             "doors_f1": "Doors F1", "windows_f1": "Windows F1", "structural_consistency": "Wall ends connected",
+             "dimension_error_pct": "Room size error % (lower is better)",
+             "scale_error_pct": "Scale error % (lower is better)"}
     for m in METRICS:
+        if all(summary[k][m] is None for k in MODES):
+            continue
         lines.append("| " + names[m] + " | " + " | ".join(
             "—" if summary[k][m] is None else f"{summary[k][m]:.3f}" for k in MODES) + " |")
     lines.append("| Plans that failed to reconstruct | " + " | ".join(str(summary[k]["failed"]) for k in MODES) + " |")
     lines.append("| Seconds per plan (after shared OCR) | " + " | ".join(
         "—" if summary[k]["seconds"] is None else f"{summary[k]['seconds']:.1f}" for k in MODES) + " |")
-    lines += ["", "Scale and size errors are not measured: CubiCasa5K annotations have no metric scale.",
-              "Caveat: the AI model was trained on CubiCasa5K (other plans, same styles), which favours it here."]
+    lines += ([""] if args.synthetic else
+              ["", "Scale and size errors are not measured: CubiCasa5K annotations have no metric scale.",
+               "Caveat: the AI model was trained on CubiCasa5K (other plans, same styles), which favours it here."])
     return "\n".join(lines) + "\n"
 
 
@@ -160,7 +192,12 @@ def main() -> None:
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--hybrid", default="", help="hybrid options, e.g. add=1,drop=1,cut=0")
     ap.add_argument("--out", default="")
+    ap.add_argument("--variants", action="store_true", help="also score the hybrid variants (tuning only)")
+    ap.add_argument("--synthetic", action="store_true", help="ArchNext's synthetic plans (seeds from --offset)")
     args = ap.parse_args()
+    if args.variants:
+        MODES.extend(VARIANTS)
+        LABEL.update({k: k for k in VARIANTS})
     kw = {}
     names = {"add": "add_missing", "drop": "drop_false", "cut": "cut_ai_openings"}
     for part in filter(None, args.hybrid.split(",")):
@@ -168,12 +205,17 @@ def main() -> None:
         kw[names[k]] = v == "1"
     if not cc.status()["available"]:
         raise SystemExit(f"Model unavailable: {cc.status()['reason']}")
-    folders = fetch(split_list(args.split)[args.offset:args.offset + args.n])
+    if args.synthetic:
+        from eval.synth import generate  # noqa: PLC0415
+        jobs = [(lambda seed=seed: run_one(*generate(seed), f"synthetic_{seed}", kw))
+                for seed in range(args.offset, args.offset + args.n)]
+    else:
+        jobs = [(lambda fo=fo: run_plan(fo, kw)) for fo in fetch(split_list(args.split)[args.offset:args.offset + args.n])]
     rows = []
-    for i, fo in enumerate(folders, 1):
-        rows.append(run_plan(fo, kw))
+    for i, job in enumerate(jobs, 1):
+        rows.append(job())
         r = rows[-1]
-        print(f"[{i}/{len(folders)}] {fo.name}: " + "  ".join(
+        print(f"[{i}/{len(jobs)}] {r['plan']}: " + "  ".join(
             f"{m}={'FAIL' if 'failed' in r[m] else round(r[m]['room_recall'] or 0, 2)}/{'' if 'failed' in r[m] else round(r[m]['wall_iou'], 2)}"
             for m in MODES), flush=True)
     summary = summarise(rows)
@@ -181,7 +223,7 @@ def main() -> None:
     if args.out:
         RESULTS.mkdir(exist_ok=True)
         meta = {"split": args.split, "n": args.n, "offset": args.offset, "hybrid_options": kw,
-                "model": cc.MODEL_NAME, "model_source": cc.MODEL_SOURCE, "dataset": "CubiCasa5K (Zenodo 2613548)",
+                "model": cc.MODEL_NAME, "model_source": cc.MODEL_SOURCE, "dataset": "ArchNext synthetic (eval/synth.py)" if args.synthetic else "CubiCasa5K (Zenodo 2613548)",
                 "infer_long_side": cc.INFER_LONG_SIDE}
         (RESULTS / f"{args.out}.json").write_text(json.dumps({"meta": meta, "summary": summary, "plans": rows},
                                                              indent=1), encoding="utf-8")

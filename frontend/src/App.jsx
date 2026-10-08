@@ -42,13 +42,13 @@ export default function App() {
     }
   }, [file])
 
-  // Switching TopologyGuard / ScaleLock re-runs the pipeline for the uploaded plan; every page follows.
-  const changeConfig = useCallback(async (topologyGuard, scaleLock) => {
+  // Switching detection mode, TopologyGuard or ScaleLock re-runs the pipeline for the uploaded plan; every page follows.
+  const changeConfig = useCallback(async (topologyGuard, scaleLock, detection) => {
     if (!result) return
     setConfigBusy(true)
     setConfigError('')
     try {
-      setResult(await api.setConfig(result.id, topologyGuard, scaleLock))
+      setResult(await api.setConfig(result.id, topologyGuard, scaleLock, detection ?? result.config?.detection))
     } catch (e) {
       setConfigError(e.message)
     } finally {
@@ -66,7 +66,10 @@ export default function App() {
           <UploadView file={file} preview={preview} status={status} error={error} result={result}
                       onFile={chooseFile} onGenerate={generate} onOpen={() => setView('analysis')} />
         )}
-        {view === 'analysis' && result && <AnalysisView result={result} onResult={setResult} onStudio={() => setView('studio')} />}
+        {view === 'analysis' && result && (
+          <AnalysisView result={result} onResult={setResult} onStudio={() => setView('studio')}
+                        onConfig={changeConfig} configBusy={configBusy} configError={configError} />
+        )}
         {view === 'studio' && result && <StudioView result={result} />}
         {view === 'validation' && result && (
           <ValidationView result={result} onConfig={changeConfig} configBusy={configBusy} configError={configError} />

@@ -111,6 +111,14 @@ export default function ValidationView({ result, onConfig, configBusy, configErr
     return () => { live = false }
   }, [result])
 
+  const downloadDraft = async () => {
+    const draft = await fetch(`/api/plans/${result.id}/annotation-draft`).then((r) => r.json())
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 1)], { type: 'application/json' }))
+    a.download = `${(result.filename || 'plan').replace(/\.[^.]+$/, '')}-answer-key-DRAFT.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+  }
   const runEval = async (f) => {
     if (!f) return
     setEvalBusy(true); setEvalErr('')
@@ -314,6 +322,8 @@ export default function ValidationView({ result, onConfig, configBusy, configErr
 }`}</pre>
           <button className="btn-secondary btn-sm mt-2" onClick={() => fileRef.current?.click()} disabled={evalBusy}>
             {evalBusy ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}Upload answer key</button>
+          <button className="btn-ghost btn-sm mt-2 ml-2" onClick={downloadDraft} title="Current detection as a draft to correct by hand">
+            <FileJson size={13} />Download draft (unverified)</button>
         </Disclosure>
       </div>
     </div>

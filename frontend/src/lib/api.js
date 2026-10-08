@@ -43,8 +43,11 @@ export const api = {
   editWall(id, wall, end, x, y, dryRun = false) {
     return request(`/api/plans/${id}/edits`, json({ wall, end, x, y, dry_run: dryRun }))
   },
-  setConfig(id, topologyGuard, scaleLock) {
-    return request(`/api/plans/${id}/config`, json({ topology_guard: topologyGuard, scale_lock: scaleLock }))
+  setConfig(id, topologyGuard, scaleLock, detection) {
+    return request(`/api/plans/${id}/config`, json({ topology_guard: topologyGuard, scale_lock: scaleLock, detection }))
+  },
+  aiStatus() {
+    return request('/api/ai/status')
   },
   compare(id) {
     return request(`/api/plans/${id}/compare`)
