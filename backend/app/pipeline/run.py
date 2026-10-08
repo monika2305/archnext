@@ -228,7 +228,7 @@ def prepare_inputs(data: bytes, mode: str = "standard", base: "PlanInputs | None
                 timings["ai"] = time.time() - t3
             # Hybrid = AI walls first, plus OpenCV pieces the AI partly supports (chosen on validation plans:
             # it beat the OpenCV-first combination, see eval/results/real_plans_preliminary.md).
-            det = ad.ai_walls(ai) if mode == "ai" else ad.hybrid_ai_base(ai, cv_det)
+            det = ad.ai_walls(ai, ink=img.soft) if mode == "ai" else ad.hybrid_ai_base(ai, cv_det, ink=img.soft)
             detection["used"] = mode
             detection["ai_seconds"] = ai.seconds
         except cc.ModelUnavailable as exc:

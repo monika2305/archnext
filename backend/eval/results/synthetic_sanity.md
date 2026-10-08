@@ -11,5 +11,5 @@
 | Room size error % (lower is better) | 0.340 | 15.757 | 2.708 | 0.422 |
 | Scale error % (lower is better) | 0.654 | 0.132 | 0.063 | 0.612 |
 | Plans that failed to reconstruct | 0 | 0 | 0 | 0 |
-| Seconds per plan (after shared OCR) | 1.6 | 1.2 | 2.8 | 3.0 |
+| Seconds per plan (after shared OCR) | 0.5 | 0.3 | 0.8 | 0.9 |
 

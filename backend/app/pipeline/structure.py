@@ -234,6 +234,10 @@ def detect_openings(walls: list[Wall], gaps: list[Gap], t: float, ink: np.ndarra
         # clear door swing of plausible door width.
         if g.dist > WIDE_OPENING * t and not evidence and g.kind != "collinear":
             continue
+        # Two walls that merely line up across a room (each already meeting another wall) are not a wall with
+        # an opening between them: without door / window evidence such a wide gap is open space.
+        if g.corner and g.kind == "collinear" and not evidence and g.dist > CORNER_OPENING * t:
+            continue
         if g.corner and g.kind != "collinear":
             strong = (o["type"] == "door" and o["confidence"] == "high") or \
                      (o["type"] == "window" and o["fill"] >= 0.9)

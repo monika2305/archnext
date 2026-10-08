@@ -89,11 +89,11 @@ Same image, coordinates and evaluation rules for every mode; TopologyGuard and S
 
 | Mean over 5 real plans | Standard | AI | Hybrid |
 |---|---|---|---|
-| Rooms found (recall, IoU ≥ 0.5) | 0.08 | 0.61 | **0.63** |
-| Room boundary overlap (IoU) | 0.07 | **0.55** | 0.54 |
-| Wall pixel IoU | 0.22 | **0.65** | 0.64 |
-| Doors F1 / Windows F1 | 0.21 / 0.12 | **0.83 / 0.76** | 0.76 / 0.68 |
-| Wall ends connected | 0.45 | 0.71 | **0.71** |
+| Rooms found (recall, IoU ≥ 0.5) | 0.08 | 0.64 | **0.64** |
+| Room boundary overlap (IoU) | 0.07 | **0.58** | 0.57 |
+| Wall pixel IoU | 0.22 | **0.65** | 0.63 |
+| Doors F1 / Windows F1 | 0.21 / 0.12 | **0.83 / 0.76** | 0.78 / 0.68 |
+| Wall ends connected | 0.45 | 0.71 | **0.72** |
 
 **3 synthetic plans** with a known scale (`synthetic_sanity.md`; synthetic, not real-world accuracy):
 room-size error Standard 0.34 %, AI 2.71 %, **Hybrid 0.42 %**; rooms found 0.91 / 0.92 / **0.95**.
@@ -109,6 +109,14 @@ real_plans`) has not been run yet.
 Visual comparisons (Original | Standard | AI | Hybrid; walls coloured correct / extra / missing against the
 human annotation): `backend/eval/results/compare_high_quality_architectural_2207.jpg` and `..._2536.jpg`.
 For your own plan (no ground truth, accuracy not measured): `python -m eval.visual_compare --image plan.png`.
+
+**Four HackNex blueprints** (simple plan, furnished colour plan, hand-drawn blueprint, dimensioned CAD with hatched
+walls; no verified annotations, so qualitative only): `backend/eval/results/hacknex_plans.md` and
+`compare_h1_simple.jpg` … `compare_h4_dimensioned.jpg`. They exposed five conversion errors that are now fixed
+(screenshot borders and sheet frames read as walls, aligned walls bridged by a false opening, Hybrid importing
+OpenCV furniture noise, door/window types from small icon fragments, holes in hatched AI walls becoming false
+openings). On the dimensioned plan, Hybrid + ScaleLock measures its written dimensions within 1.27 % (17.3 %
+without ScaleLock); Standard cannot reconstruct that plan.
 
 For a plan without ground truth, **Validation → Advanced details → Download draft (unverified)** exports the
 current detection as an answer-key draft. Correct it by hand and set `"verified": true`; unverified drafts are
@@ -297,7 +305,7 @@ repository):
 
 ### Tests run
 
-* `cd backend && python -m pytest -q`: **23 tests** (the CubiCasa5K tests skip when the model is not installed):
+* `cd backend && python -m pytest -q`: **29 tests** (the CubiCasa5K tests skip when the model is not installed):
   * dimension parsing
   * TopologyGuard closes breaks but keeps openings
   * end-to-end reconstruction with auto scale under 3 % error
@@ -317,6 +325,9 @@ repository):
   * **detection modes**: AI geometry lies on the AI prediction, switching modes reuses the cached prediction
     and changes the geometry, fallback to Standard is reported, TopologyGuard / ScaleLock / comparison /
     manual edit + Undo work in AI mode, the default-mode rule, unverified answer-key drafts are refused
+  * **conversion fixes**: screenshot borders ignored while walls near the edge (incl. thin double-line walls
+    on tight crops) are kept; aligned walls are not bridged by a false opening; door/window type needs length
+    coverage; hatched-wall holes are restored up to a real door; Hybrid ignores noisy OpenCV output
 * Browser end-to-end (headless Chromium):
   * upload → Analysis → Fix preview → Apply → 3D Studio → GLB export
   * the exported GLB changes (the moved walls and the recomputed floors), and after Undo it is node-for-node

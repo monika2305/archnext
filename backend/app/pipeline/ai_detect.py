@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from . import cubicasa as cc
+from . import fixes as fx
 from .structure import MIN_OPENING, classify_gap, find_gaps, opening_polygon
 from .walls import WallDetection, vectorise
 
@@ -60,6 +61,133 @@ def _cut_openings(wall: np.ndarray, icons: np.ndarray, t: float) -> np.ndarray:
     return out
 
 
+def _profile(ink: np.ndarray, x0: float, y0: float, ux: float, uy: float, length: float, half: float) -> np.ndarray:
+    """Ink fraction across a wall (one value per offset from the centre line), sampled along ``length``."""
+    nx, ny = -uy, ux
+    s = np.linspace(0, length, max(4, int(length)))
+    k = np.arange(-half - 2, half + 3, 1.0)
+    xs = np.clip(np.round(x0 + ux * s[:, None] + nx * k[None, :]).astype(int), 0, ink.shape[1] - 1)
+    ys = np.clip(np.round(y0 + uy * s[:, None] + ny * k[None, :]).astype(int), 0, ink.shape[0] - 1)
+    return ink[ys, xs].mean(0)
+
+
+def _outside_mask(pred: cc.AIPrediction) -> np.ndarray:
+    """Pixels outside the building: reachable from the image border without crossing an AI wall, door or
+    window (openings closed, so the envelope is sealed)."""
+    barrier = (pred.rooms == cc.WALL) | np.isin(pred.icons, (cc.DOOR, cc.WINDOW))
+    barrier = cv2.dilate(barrier.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    n, labels = cv2.connectedComponents((~barrier).astype(np.uint8), connectivity=4)
+    border = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    return np.isin(labels, border[border > 0])
+
+
+def _interior(outside: np.ndarray | None, g, half: float, t: float) -> bool:
+    """True when both sides of the gap lie inside the building (first free pixel beyond the wall)."""
+    if outside is None:
+        return False
+    nx, ny = -g.dy, g.dx
+    H, W = outside.shape
+    for f in (0.25, 0.5, 0.75):
+        px, py = g.sx + g.dx * g.dist * f, g.sy + g.dy * g.dist * f
+        for sgn in (1, -1):
+            for d in np.arange(half + 3, half + 4 * t, 2.0):
+                x, y = int(round(px + nx * sgn * d)), int(round(py + ny * sgn * d))
+                if not (0 <= x < W and 0 <= y < H) or outside[y, x]:
+                    return False
+    return True
+
+
+def _face_runs(ink: np.ndarray, icons: np.ndarray, g, half: float, interior: bool = False) -> tuple[float, float]:
+    """How far (px) both wall faces continue into the gap from its start and from its far end, with no
+    predicted door / window there. Used to restore drawn wall that sits on either side of a real door."""
+    nx, ny = -g.dy, g.dx
+    n = max(2, int(g.dist))
+    s = np.linspace(0, g.dist, n)
+    def present(sign):
+        # Ink anywhere on that side of the centre line, from 0.3 x half to just beyond the AI wall face: the
+        # drawn wall may be thicker, thinner or slightly offset compared with the AI prediction.
+        hits = np.zeros(n, bool)
+        for d in np.arange(0.3 * half, half + 4, 1.0):
+            off = sign * d
+            xs = np.clip(np.round(g.sx + g.dx * s + nx * off).astype(int), 0, ink.shape[1] - 1)
+            ys = np.clip(np.round(g.sy + g.dy * s + ny * off).astype(int), 0, ink.shape[0] - 1)
+            hits |= ink[ys, xs]
+        return hits
+    k = np.arange(-half - 2, half + 3, 1.0)
+    xs = np.clip(np.round(g.sx + g.dx * s[:, None] + nx * k[None, :]).astype(int), 0, icons.shape[1] - 1)
+    ys = np.clip(np.round(g.sy + g.dy * s[:, None] + ny * k[None, :]).astype(int), 0, icons.shape[0] - 1)
+    # Windows only exist in exterior walls: on an interior wall a predicted "window" is a misread hatching.
+    icon = np.isin(icons[ys, xs], (cc.DOOR,) if interior else (cc.DOOR, cc.WINDOW)).any(1)
+    ok = present(1.0) & present(-1.0) & ~icon
+    step = g.dist / max(n - 1, 1)
+    start = int(np.argmin(ok)) if not ok.all() else n
+    end = int(np.argmin(ok[::-1])) if not ok.all() else n
+    return start * step, end * step
+
+
+def close_inked_gaps(walls: list, t: float, ink: np.ndarray, icons: np.ndarray,
+                     outside: np.ndarray | None = None) -> list:
+    """Close gaps between AI wall pieces where the drawing shows the SAME wall continuing.
+
+    The AI often leaves holes in hatched or outlined walls; the gaps would become false openings. A gap is
+    closed only when its ink cross-section matches the wall it extends (both faces continue, same fill) and
+    the AI sees no door or window there. Window glazing has a different cross-section, door gaps have no
+    faces, so genuine openings stay open.
+    """
+    ink = cv2.dilate(ink, np.ones((3, 3), np.uint8)) > 0
+    tried: set = set()
+    for _ in range(80):
+        spec = None
+        for g in find_gaps(walls, t, max_mult=40, corners=False):
+            a, b = walls[g.a], walls[g.b]
+            key = (a.id, g.end, b.id)
+            if g.kind == "oblique" or key in tried or a.orient not in "hv" or g.dist < 1:
+                continue
+            tried.add(key)
+            half = a.thickness / 2
+            gap = _profile(ink, g.sx, g.sy, g.dx, g.dy, g.dist, half)
+            ref_len = min(3 * t, 0.5 * a.length)
+            rx, ry = g.sx - g.dx * (ref_len + 1), g.sy - g.dy * (ref_len + 1)
+            ref = _profile(ink, rx, ry, g.dx, g.dy, ref_len, half)
+            faces = (gap[1:4].max(), gap[-4:-1].max())
+            o = {"x1": g.sx, "y1": g.sy, "x2": g.hx, "y2": g.hy, "width": g.dist, "thickness": a.thickness}
+            door, window = _icon_cover(o, icons, t)
+            inside = _interior(outside, g, half, t)
+            if inside:
+                window = 0.0
+            if min(faces) < 0.85 or np.abs(gap - ref).max() > 0.35 or max(door, window) > 0.2:
+                # Not the same wall all the way: restore the drawn wall on each side of a real door / window,
+                # leaving only the true opening (if what remains is still wide enough to be one).
+                if g.kind != "collinear" or a.orient != b.orient:
+                    continue
+                l1, l2 = _face_runs(ink, icons, g, half, inside)
+                l1, l2 = (l1 if l1 >= max(t, 6) else 0.0), (l2 if l2 >= max(t, 6) else 0.0)
+                if (l1 or l2) and g.dist - l1 - l2 >= MIN_OPENING * t:
+                    if l1:
+                        walls = fx.apply_fix(walls, {"kind": "connect", "ids": [a.id], "a": a.id, "end": g.end,
+                                                     "dist": l1})
+                    if l2:
+                        bi = fx._end_index(b, g.hx, g.hy)
+                        walls = fx.apply_fix(walls, {"kind": "connect", "ids": [b.id], "a": b.id, "end": bi,
+                                                     "dist": l2})
+                    spec = {"kind": "partial"}
+                    break
+                continue
+            if g.kind == "collinear" and a.orient == b.orient and a.orient in "hv":
+                spec = {"kind": "close_gap", "ids": [a.id, b.id], "a": a.id, "b": b.id}
+            else:
+                spec = {"kind": "connect", "ids": [a.id], "a": a.id, "end": g.end, "dist": g.dist + b.thickness / 2}
+            break
+        if spec is None:
+            break
+        if spec["kind"] != "partial":
+            walls = fx.apply_fix(walls, spec)
+        for w in walls:
+            if w.source == "edited":
+                w.source = "auto"
+    return walls
+
+
 def _drop_small(mask: np.ndarray, t: float) -> np.ndarray:
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     keep = np.zeros(n, bool)
@@ -69,14 +197,16 @@ def _drop_small(mask: np.ndarray, t: float) -> np.ndarray:
     return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
-def ai_walls(pred: cc.AIPrediction, thin_width: float = 2.0) -> WallDetection:
-    """AI-only wall geometry."""
+def ai_walls(pred: cc.AIPrediction, thin_width: float = 2.0, ink: np.ndarray | None = None) -> WallDetection:
+    """AI-only wall geometry (``ink``: the drawing's ink mask, used to close holes in drawn walls)."""
     raw = pred.wall_mask
     t, t_max = _mask_thickness(raw)
     if t <= 0:
         raise ValueError("The AI model found no walls in this image.")
     mask = _drop_small(_cut_openings(raw, pred.icons, t), t)
     walls, solids = vectorise(mask, t, max(t_max, t), min_thick=0.3)
+    if ink is not None:
+        walls = close_inked_gaps(walls, t, ink, pred.icons, _outside_mask(pred))
     if len(walls) < 4:
         raise ValueError("The AI model found too few walls to reconstruct a building.")
     return WallDetection(mask=mask, thickness=t, max_thickness=max(t_max, t), thin_width=thin_width, kernel=0,
@@ -129,27 +259,31 @@ def hybrid_walls(pred: cc.AIPrediction, cv_det: WallDetection | None, soft: np.n
                          kernel=cv_det.kernel, walls=walls, solids=solids, warnings=list(cv_det.warnings))
 
 
-def hybrid_ai_base(pred: cc.AIPrediction, cv_det: WallDetection | None, min_support: float = 0.3) -> WallDetection:
-    """AI walls first; OpenCV adds only wall pieces that the AI also partly sees as wall (it under-segmented
-    them). Thickness follows the AI walls so thin and thick walls both survive."""
-    if cv_det is None:
-        return ai_walls(pred)
+def hybrid_ai_base(pred: cc.AIPrediction, cv_det: WallDetection | None, ink: np.ndarray | None = None,
+                   min_support: float = 0.5) -> WallDetection:
+    """AI walls first; OpenCV adds only wall pieces that the AI clearly sees as wall too and that are shaped
+    like walls (not furniture blocks, rugs or frames). If OpenCV's output is mostly noise (far more "wall"
+    than the AI predicts, e.g. coloured furnished plans), it is ignored and the AI geometry is used."""
     raw = pred.wall_mask
     t, t_max = _mask_thickness(raw)
-    if t <= 0:
-        raise ValueError("The AI model found no walls in this image.")
+    if cv_det is None or t <= 0 or np.count_nonzero(cv_det.mask) > 2.5 * max(np.count_nonzero(raw), 1):
+        return ai_walls(pred, thin_width=cv_det.thin_width if cv_det else 2.0, ink=ink)
     ai = _cut_openings(raw, pred.icons, t)
     k = int(max(3, round(t)))
-    weak = cv2.dilate((pred.wall_prob > 0.05).astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    strong = cv2.dilate((pred.wall_prob > 0.2).astype(np.uint8), np.ones((k, k), np.uint8)) > 0
+    dt = cv2.distanceTransform(cv_det.mask, cv2.DIST_L2, 5)
     n, labels, stats, _ = cv2.connectedComponentsWithStats(cv_det.mask, connectivity=8)
     keep = np.zeros(n, bool)
     for i in range(1, n):
         x, y, w, h, area = stats[i]
         comp = labels[y:y + h, x:x + w] == i
-        keep[i] = weak[y:y + h, x:x + w][comp].mean() >= min_support
+        thick = 2 * float(dt[y:y + h, x:x + w][comp].max())
+        keep[i] = strong[y:y + h, x:x + w][comp].mean() >= min_support and thick <= 1.5 * max(t_max, t)
     cv_part = keep[labels] & (_cut_openings(np.full_like(raw, 255), pred.icons, t) > 0)
     mask = _drop_small(np.where((ai > 0) | cv_part, 255, 0).astype(np.uint8), t)
     walls, solids = vectorise(mask, t, max(t_max, t), min_thick=0.3)
+    if ink is not None:
+        walls = close_inked_gaps(walls, t, ink, pred.icons, _outside_mask(pred))
     if len(walls) < 4:
         raise ValueError("Too few walls after combining OpenCV and AI detections.")
     return WallDetection(mask=mask, thickness=t, max_thickness=max(t_max, t), thin_width=cv_det.thin_width,
@@ -159,27 +293,27 @@ def hybrid_ai_base(pred: cc.AIPrediction, cv_det: WallDetection | None, min_supp
 def retype_openings(openings: list[dict], pred: cc.AIPrediction, t: float) -> None:
     """Use the AI icon map to decide door vs window for every detected gap opening (in place)."""
     for o in openings:
-        door, window = _icon_share(o, pred.icons, t)
-        if max(door, window) >= 0.15:
+        door, window = _icon_cover(o, pred.icons, t)
+        if max(door, window) >= 0.5:
             o["type"] = "door" if door >= window else "window"
             o["confidence"] = "high"
             o["source"] = "ai"
 
 
-def _icon_share(o: dict, icons: np.ndarray, t: float) -> tuple[float, float]:
-    """Share of door / window pixels in the opening's footprint (padded to at least the wall thickness)."""
+def _icon_cover(o: dict, icons: np.ndarray, t: float) -> tuple[float, float]:
+    """Share of the opening's LENGTH covered by a predicted door / window (anywhere across the wall thickness).
+
+    Length coverage, not area share: a wide gap with a small door icon at one end is not a door."""
     L = max(o["width"], 1.0)
     ux, uy = (o["x2"] - o["x1"]) / L, (o["y2"] - o["y1"]) / L
     nx, ny = -uy, ux
     h = max(o["thickness"], t) / 2 + 2
-    poly = np.array([[o["x1"] + nx * h, o["y1"] + ny * h], [o["x2"] + nx * h, o["y2"] + ny * h],
-                     [o["x2"] - nx * h, o["y2"] - ny * h], [o["x1"] - nx * h, o["y1"] - ny * h]], np.int32)
-    m = np.zeros(icons.shape, np.uint8)
-    cv2.fillPoly(m, [poly], 1)
-    sel = icons[m > 0]
-    if sel.size == 0:
-        return 0.0, 0.0
-    return float((sel == cc.DOOR).mean()), float((sel == cc.WINDOW).mean())
+    s = np.linspace(0, L, max(8, int(L / 2)))
+    k = np.arange(-h, h + 1, 1.0)
+    xs = np.clip(np.round(o["x1"] + ux * s[:, None] + nx * k[None, :]).astype(int), 0, icons.shape[1] - 1)
+    ys = np.clip(np.round(o["y1"] + uy * s[:, None] + ny * k[None, :]).astype(int), 0, icons.shape[0] - 1)
+    v = icons[ys, xs]
+    return float((v == cc.DOOR).any(1).mean()), float((v == cc.WINDOW).any(1).mean())
 
 
 def ai_gap_openings(walls, t: float, ink: np.ndarray, pred: cc.AIPrediction, existing: list[dict]) -> list[dict]:
@@ -192,8 +326,8 @@ def ai_gap_openings(walls, t: float, ink: np.ndarray, pred: cc.AIPrediction, exi
         if g.kind == "oblique" or g.dist < MIN_OPENING * t or walls[g.b].thickness > 3 * t:
             continue
         o = classify_gap(g, walls, ink, ink_dil)
-        door, window = _icon_share(o, pred.icons, t)
-        if max(door, window) < 0.35:
+        door, window = _icon_cover(o, pred.icons, t)
+        if max(door, window) < 0.6:
             continue
         op = opening_polygon(o)
         if any(op.intersection(h).area > 0.3 * min(op.area, h.area) for h in have):

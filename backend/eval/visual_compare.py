@@ -63,7 +63,7 @@ def legend(width, with_gt):
 
 
 def build(data: bytes, gt_raw: dict | None, name: str) -> Path:
-    base = prepare_inputs(data, "standard")
+    base = prepare_inputs(data, "ai")      # image, OCR, OpenCV parse and AI prediction, computed once
     img = cv2.cvtColor(base.img.rgb, cv2.COLOR_RGB2BGR)
     f = base.img.resample
     gt_walls = None
@@ -75,8 +75,9 @@ def build(data: bytes, gt_raw: dict | None, name: str) -> Path:
     panels = [label(img.copy(), "Original", f"{name}" + ("  |  human ground truth" if gt_raw else "  |  accuracy not measured"))]
     for mode, title in (("standard", "Standard (OpenCV)"), ("ai", "AI model (CubiCasa5K)"), ("hybrid", "Hybrid")):
         try:
-            inp = base if mode == "standard" else prepare_inputs(data, mode, base=base)
-            base.ai = inp.ai or base.ai
+            inp = base if mode == "ai" else prepare_inputs(data, mode, base=base)
+            if mode != "standard" and inp.detection.get("used") != mode:
+                raise ValueError(inp.detection.get("fallback") or "AI detection unavailable")
             sess = process_plan(data, name, inputs=inp)
             st = sess.corrected.stats()
             sub = f"{st['rooms']} rooms  {st['doors']} doors  {st['windows']} windows  {round(100 * st['connected_endpoint_ratio'])}% ends connected"
