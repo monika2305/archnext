@@ -13,6 +13,8 @@ export default function App() {
   const [status, setStatus] = useState('idle') // idle | processing | ready | error
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [configBusy, setConfigBusy] = useState(false)
+  const [configError, setConfigError] = useState('')
 
   useEffect(() => () => preview && URL.revokeObjectURL(preview), [preview])
 
@@ -40,19 +42,35 @@ export default function App() {
     }
   }, [file])
 
+  // Switching TopologyGuard / ScaleLock re-runs the pipeline for the uploaded plan; every page follows.
+  const changeConfig = useCallback(async (topologyGuard, scaleLock) => {
+    if (!result) return
+    setConfigBusy(true)
+    setConfigError('')
+    try {
+      setResult(await api.setConfig(result.id, topologyGuard, scaleLock))
+    } catch (e) {
+      setConfigError(e.message)
+    } finally {
+      setConfigBusy(false)
+    }
+  }, [result])
+
   const newPlan = useCallback(() => chooseFile(null), [chooseFile])
 
   return (
     <div className="h-full flex flex-col">
-      <Header view={view} onView={setView} hasResult={!!result} filename={result?.filename} onNew={newPlan} />
+      <Header view={view} onView={setView} hasResult={!!result} config={result?.config} onNew={newPlan} />
       <main className="flex-1 min-h-0">
         {view === 'upload' && (
           <UploadView file={file} preview={preview} status={status} error={error} result={result}
                       onFile={chooseFile} onGenerate={generate} onOpen={() => setView('analysis')} />
         )}
         {view === 'analysis' && result && <AnalysisView result={result} onResult={setResult} onStudio={() => setView('studio')} />}
-        {view === 'studio' && result && <StudioView result={result} onCalibrate={() => setView('analysis')} />}
-        {view === 'validation' && result && <ValidationView result={result} />}
+        {view === 'studio' && result && <StudioView result={result} />}
+        {view === 'validation' && result && (
+          <ValidationView result={result} onConfig={changeConfig} configBusy={configBusy} configError={configError} />
+        )}
       </main>
     </div>
   )

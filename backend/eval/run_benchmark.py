@@ -105,7 +105,7 @@ def main(count: int = 20, first_seed: int = 100, verify: bool = False) -> dict:
         "seconds": round(time.time() - t0, 1),
     }
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "benchmark.json").write_text(json.dumps(result, indent=1, ensure_ascii=False))
+    (OUT / "benchmark.json").write_text(json.dumps(result, indent=1, ensure_ascii=False), encoding="utf-8")
     lines = [f"# {result['dataset']['label']}", "",
              f"Seeds {first_seed}-{first_seed + count - 1}. {PARSER_NOTE}.", "",
              "| Metric | " + " | ".join(c["label"] for c in CONFIGS) + " |",
@@ -116,7 +116,7 @@ def main(count: int = 20, first_seed: int = 100, verify: bool = False) -> dict:
         lines.append(f"| {k} F1 (micro) | " + " | ".join(str(result["results"][c["key"]][k]["f1"]) for c in CONFIGS) + " |")
     lines += ["", f"Reproducibility check: {'identical on re-run' if reproducible else 'not run' if reproducible is None else 'DIFFERENT on re-run'}",
               "", result["notes"]["scale"]]
-    (OUT / "benchmark.md").write_text("\n".join(lines) + "\n")
+    (OUT / "benchmark.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 
 

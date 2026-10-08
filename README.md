@@ -113,7 +113,8 @@ Door-sized gaps are never closed automatically.
 ### Fix buttons (first part of Fix2Build)
 
 After the automatic pass, the remaining issues are re-detected on the **current** geometry and listed in
-**Analysis → TopologyGuard → Needs attention**. Clicking an issue highlights it on the blueprint.
+**Analysis → Issues** with short titles ("Wall stops short", "Loose wall end"); the full explanation is
+behind **Details**. Clicking an issue highlights it on the blueprint.
 
 | Remaining issue | Offered action |
 |---|---|
@@ -121,7 +122,7 @@ After the automatic pass, the remaining issues are re-detected on the **current*
 | Wall stopping short of a junction (up to 1.9 × thickness) | **Connect walls** (extends the wall to the junction) |
 | Two walls almost meeting at a corner | **Align junction** (both ends moved to a clean corner, each by ≤ 2 × thickness) |
 | Overlapping parallel segments of similar thickness | **Remove duplicate** |
-| Anything else (free wall ends, oblique crossings, uncertain openings, gaps showing door/window markings) | **Manual review required**, no button |
+| Anything else (free wall ends, oblique crossings, uncertain openings, gaps showing door/window markings) | **Edit by hand** (see below), no automatic fix |
 
 A fix is offered only if it is local, the gap shows no door-swing or glazing marks, the new geometry does
 not cover a detected door or window, and the wall end is actually connected afterwards. **Fix** shows a
@@ -129,6 +130,22 @@ preview (red dashed = current, green = after); **Apply** changes the stored wall
 rooms, room dimensions, ScaleLock label matching, all checks and the 3D model / GLB are then recomputed.
 **Undo** restores the previous geometry exactly (up to 20 steps). "All structural checks pass" is only
 shown when the re-run checks find nothing. User fixes are never counted in the automatic accuracy scores.
+
+### Manual wall-end editing
+
+**Edit walls** (or **Edit by hand** on an issue) lets you drag either end of a wall. Horizontal and vertical
+walls stay straight, and the end snaps to the nearest wall end or wall centre line within 2 × wall
+thickness. The server validates every drop before anything changes: the edit is refused if it would cover
+a door, window or other opening, make any existing opening disappear after re-detection, flip the wall or
+make it too short. A valid edit shows the result (snapped position, room count) and is committed only on
+**Apply**; **Undo** reverts it like any fix.
+
+### Live TopologyGuard / ScaleLock switches
+
+The two switches on the Validation page re-run the pipeline for the uploaded plan in any of the four
+configurations. Preprocessing, OCR and wall parsing are computed once and shared, so switching takes a
+moment rather than a full re-upload. The 2D overlay, issues, measurements, 3D model and GLB export all
+follow the active configuration. Each configuration keeps its own fixes, undo history and calibration.
 
 ## Feature 2 — ScaleLock
 
@@ -152,19 +169,21 @@ labelled as such. Wall thickness comes from the plan.
 
 ## The four views
 
-* **Upload** — drag and drop or browse, preview, *Generate 3D*. Shows processing status without
-  invented percentages, and errors with a retry option.
-* **Analysis** — blueprint overlay (walls, rooms, doors and windows, issues, dimension labels), a switch
-  between *Detected* and *TopologyGuard corrected*, the TopologyGuard panel, and the ScaleLock panel with
-  manual calibration.
-* **3D Studio** — orbit, pan and zoom; perspective, top view, and a first-person **walkthrough** (WASD,
-  walls block movement); reset camera; room labels; wall-height control; **Export GLB**.
-* **Validation** — (A) four overview cards (room detection, structural connectivity, dimension error,
-  room overlap), each labelled with its source; (B) before-vs-after charts; (C) the four-way ablation with
-  a metric selector and detailed table; (D) scale verification (written vs predicted, calibration method,
-  warnings); (E) advanced sections: structural checks, room schedule, annotation upload, precision/recall/
-  IoU/F1 details, full benchmark tables. A switch selects **This plan** or **Synthetic benchmark**; without an
-  annotation, plan accuracy shows *Not evaluated*, never a borrowed number.
+* **Upload** — large drop area, blueprint preview, one action: *Generate 3D*.
+* **Analysis** — the blueprint fills the page with compact layer toggles (walls, rooms, doors & windows,
+  issues) and zoom. A slim side panel holds the summary (rooms, walls, doors, windows, issues), the scale
+  status with *Set scale*, and the issue list with Fix → Preview → Apply / Cancel → Undo and manual editing.
+* **3D Studio** — a full-size viewer with four visible actions: **Orbit**, **Walkthrough** (WASD, walls
+  block movement), **Reset** and **Export GLB**. Top view, room labels, wall height, construction values and
+  the room list live in the collapsible settings panel.
+* **Validation** — *How accurate is your plan?* Two switches (**TopologyGuard**, **ScaleLock**), four plain
+  metric cards measured on the uploaded plan (walls connected, rooms found, size error against the
+  dimensions written on the plan, accuracy), and one before → after comparison against both features off.
+  Without an answer key (ground-truth annotation) the accuracy card says *Accuracy not measured*.
+  **Research results** (collapsed) holds the four-way ablation on the synthetic benchmark, clearly labelled
+  as synthetic, plus the four settings measured on this plan. **Advanced details** (collapsed) holds the
+  structural checks, room schedule, written-vs-measured sizes, precision/recall/F1 tables, per-plan
+  benchmark tables and the answer-key format.
 
 ---
 
@@ -227,11 +246,11 @@ repository):
 | Australian marketing plan (grey interior walls) | **fails to form rooms**: only the thick exterior walls are detected |
 
 `samples/` has two generated plans with annotation files. Upload `generated_plan_7.png`, then load
-`generated_plan_7.json` in **Validation → Ground-truth evaluation** to see the metrics live.
+`generated_plan_7.json` with **Validation → Accuracy → Add answer key** to see the metrics live.
 
 ### Tests run
 
-* `cd backend && python -m pytest -q`: **9 tests**:
+* `cd backend && python -m pytest -q`: **14 tests**:
   * dimension parsing
   * TopologyGuard closes breaks but keeps openings
   * end-to-end reconstruction with auto scale under 3 % error
@@ -242,6 +261,10 @@ repository):
   * **fixes**: Connect changes the real wall coordinates and splits the merged room, the issue
     disappears, Undo restores identical geometry, door-width gaps are never offered a fix, and the
     fix/undo API round-trips
+  * **live configurations**: all four TopologyGuard / ScaleLock combinations change the current plan's
+    geometry, checks and scale; fixes are kept per configuration; the comparison endpoint
+  * **manual editing**: a dragged end snaps onto the wall and splits the merged room, a dry run changes
+    nothing, Undo restores it; dragging a wall across a doorway is refused and leaves geometry unchanged
 * Browser end-to-end (headless Chromium):
   * upload → Analysis → Fix preview → Apply → 3D Studio → GLB export
   * the exported GLB changes (the moved walls and the recomputed floors), and after Undo it is node-for-node
@@ -270,14 +293,15 @@ repository):
 
 ## Fix2Build status
 
-**Implemented:** issue-based fixes with preview, apply and undo (above). **Not implemented:** free-form
-editing of wall endpoints, room polygons and opening positions (no CAD editor).
+**Implemented:** issue-based fixes with preview, apply and undo, and validated wall-end editing with
+snapping (above). **Not implemented:** editing room polygons or moving openings (no CAD editor).
 
 ## Project layout
 
 ```
 backend/
-  app/main.py              FastAPI endpoints (upload, image, calibration, evaluation, benchmark)
+  app/main.py              FastAPI endpoints (upload, image, calibration, fixes, wall edits,
+                           configuration switch, comparison, evaluation, benchmark)
   app/pipeline/            preprocess, walls, structure (openings), rooms, topology (TopologyGuard),
                            scalelock, measure (dimension parsing), ocr, run (orchestration)
   app/pipeline/fixes.py    remaining-issue detection, safe fix proposals, apply
@@ -287,7 +311,7 @@ backend/
   tests/                   pytest suite
 frontend/
   src/views/               Upload, Analysis, 3D Studio, Validation
-  src/components/          blueprint overlay, TopologyGuard / ScaleLock panels, walkthrough
+  src/components/          blueprint overlay (with wall-end editing), issue list, charts, walkthrough
   src/lib/buildModel.js    procedural Three.js building + GLB export source
 samples/                   generated plans + annotation files
 ```

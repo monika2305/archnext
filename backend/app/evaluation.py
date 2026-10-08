@@ -137,14 +137,18 @@ def evaluate_config_session(cfg_sess, gt: dict) -> dict:
     return res
 
 
-def run_ablation(data: bytes, gt_raw: dict) -> dict:
-    """Run the four configurations independently on the same image and ground truth."""
+def run_ablation(data: bytes, gt_raw: dict, inputs=None) -> dict:
+    """Run the four configurations independently on the same image and ground truth.
+
+    ``inputs`` (preprocessing, OCR and parser output) are shared because they are identical in every
+    configuration; only TopologyGuard and ScaleLock differ."""
     from .pipeline.run import process_plan
 
     out = {}
     resample = None
     for cfg in CONFIGS:
-        sess = process_plan(data, "ablation", topology_guard=cfg["topology_guard"], scale_lock=cfg["scale_lock"])
+        sess = process_plan(data, "ablation", topology_guard=cfg["topology_guard"], scale_lock=cfg["scale_lock"],
+                            inputs=inputs)
         resample = sess.image.resample
         out[cfg["key"]] = evaluate_config_session(sess, _scale_gt(gt_raw, resample))
     return out
@@ -153,7 +157,7 @@ def run_ablation(data: bytes, gt_raw: dict) -> dict:
 def evaluate_session(sess, gt_raw: dict) -> dict:
     if not isinstance(gt_raw, dict) or not isinstance(gt_raw.get("rooms"), list):
         raise ValueError("the annotation must contain a 'rooms' list")
-    configs = run_ablation(sess.data, gt_raw)
+    configs = run_ablation(sess.data, gt_raw, getattr(sess, "inputs", None))
     return {
         "source": "current_plan",
         "parser": PARSER_NOTE,

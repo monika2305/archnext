@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field
 
 from .evaluation import evaluate_session
 from .pipeline.preprocess import PlanImageError
-from .pipeline.run import (PlanSession, apply_manual_scale, apply_user_fix, process_plan, reset_scale, session_result,
-                           undo_user_fix)
+from .pipeline.run import (PlanSession, apply_manual_scale, apply_user_fix, compare_configs, edit_wall_end,
+                           process_plan, reset_scale, session_result, set_config, undo_user_fix)
 
 log = logging.getLogger("archnext")
 logging.basicConfig(level=logging.INFO)
@@ -88,18 +88,20 @@ def calibrate(plan_id: str, body: Calibration):
     sess = _get(plan_id)
     if body.unit not in UNIT_TO_M:
         raise HTTPException(400, "Unsupported unit.")
-    try:
-        apply_manual_scale(sess, body.p1, body.p2, body.distance * UNIT_TO_M[body.unit])
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return session_result(sess)
+    with sess.lock:
+        try:
+            apply_manual_scale(sess, body.p1, body.p2, body.distance * UNIT_TO_M[body.unit])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return session_result(sess)
 
 
 @app.delete("/api/plans/{plan_id}/calibration")
 def clear_calibration(plan_id: str):
     sess = _get(plan_id)
-    reset_scale(sess)
-    return session_result(sess)
+    with sess.lock:
+        reset_scale(sess)
+        return session_result(sess)
 
 
 class FixRequest(BaseModel):
@@ -109,7 +111,7 @@ class FixRequest(BaseModel):
 @app.post("/api/plans/{plan_id}/fixes")
 def apply_fix(plan_id: str, body: FixRequest):
     sess = _get(plan_id)
-    with _lock:
+    with sess.lock:
         try:
             report = apply_user_fix(sess, body.key)
         except KeyError as exc:
@@ -120,12 +122,57 @@ def apply_fix(plan_id: str, body: FixRequest):
 @app.post("/api/plans/{plan_id}/fixes/undo")
 def undo_fix(plan_id: str):
     sess = _get(plan_id)
-    with _lock:
+    with sess.lock:
         try:
             undo_user_fix(sess)
         except KeyError as exc:
             raise HTTPException(409, str(exc.args[0])) from exc
     return session_result(sess)
+
+
+class WallEdit(BaseModel):
+    wall: str
+    end: int = Field(..., ge=0, le=1)
+    x: float
+    y: float
+    dry_run: bool = False
+
+
+@app.post("/api/plans/{plan_id}/edits")
+def edit_wall(plan_id: str, body: WallEdit):
+    """Move one wall end by hand. With ``dry_run`` the edit is only snapped and validated."""
+    sess = _get(plan_id)
+    with sess.lock:
+        try:
+            check = edit_wall_end(sess, body.wall, body.end, body.x, body.y, dry_run=body.dry_run)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(409, str(exc.args[0])) from exc
+        if body.dry_run:
+            return {"check": check}
+        if not check["ok"]:
+            raise HTTPException(409, check["reason"])
+        return {**session_result(sess), "check": check}
+
+
+class PipelineConfig(BaseModel):
+    topology_guard: bool
+    scale_lock: bool
+
+
+@app.post("/api/plans/{plan_id}/config")
+def change_config(plan_id: str, body: PipelineConfig):
+    """Switch TopologyGuard / ScaleLock for this plan; geometry, scale and checks are recomputed."""
+    sess = _get(plan_id)
+    with sess.lock:
+        set_config(sess, body.topology_guard, body.scale_lock)
+        return session_result(sess)
+
+
+@app.get("/api/plans/{plan_id}/compare")
+def compare(plan_id: str):
+    sess = _get(plan_id)
+    with sess.lock:
+        return compare_configs(sess)
 
 
 @app.post("/api/plans/{plan_id}/evaluate")
@@ -142,7 +189,7 @@ async def evaluate(plan_id: str, file: UploadFile = File(...)):
 def benchmark():
     if not BENCHMARK_FILE.exists():
         return JSONResponse({"available": False})
-    return {"available": True, **json.loads(BENCHMARK_FILE.read_text())}
+    return {"available": True, **json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))}
 
 
 # Serve the built frontend when present (single-process demo mode).

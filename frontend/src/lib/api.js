@@ -20,6 +20,8 @@ async function request(url, opts) {
   }
 }
 
+const json = (body) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
 export const api = {
   upload(file) {
     const fd = new FormData()
@@ -27,24 +29,25 @@ export const api = {
     return request('/api/plans', { method: 'POST', body: fd })
   },
   calibrate(id, p1, p2, distance, unit) {
-    return request(`/api/plans/${id}/calibration`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ p1, p2, distance, unit }),
-    })
+    return request(`/api/plans/${id}/calibration`, json({ p1, p2, distance, unit }))
   },
   resetCalibration(id) {
     return request(`/api/plans/${id}/calibration`, { method: 'DELETE' })
   },
   applyFix(id, key) {
-    return request(`/api/plans/${id}/fixes`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key }),
-    })
+    return request(`/api/plans/${id}/fixes`, json({ key }))
   },
   undoFix(id) {
     return request(`/api/plans/${id}/fixes/undo`, { method: 'POST' })
+  },
+  editWall(id, wall, end, x, y, dryRun = false) {
+    return request(`/api/plans/${id}/edits`, json({ wall, end, x, y, dry_run: dryRun }))
+  },
+  setConfig(id, topologyGuard, scaleLock) {
+    return request(`/api/plans/${id}/config`, json({ topology_guard: topologyGuard, scale_lock: scaleLock }))
+  },
+  compare(id) {
+    return request(`/api/plans/${id}/compare`)
   },
   evaluate(id, file) {
     const fd = new FormData()

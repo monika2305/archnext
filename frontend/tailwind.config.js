@@ -12,7 +12,7 @@ export default {
         accent: { DEFAULT: '#3F6A8F', soft: '#E7EEF4', dark: '#2F5373' },
         ok: '#3E7D5A', warn: '#B07A2A', bad: '#A64B45',
       },
-      boxShadow: { card: '0 1px 2px rgba(38,41,46,0.05)' },
+      boxShadow: { card: '0 1px 2px rgba(38,41,46,0.05)', float: '0 6px 24px -6px rgba(38,41,46,0.18), 0 1px 3px rgba(38,41,46,0.06)' },
     },
   },
   plugins: [],
