@@ -113,8 +113,23 @@ VARIANT_FIELDS = ("original", "corrected", "issues", "measurements", "auto_scale
                   "config", "auto_version", "auto_issues", "auto_scale_initial", "fix_specs", "fix_log", "history",
                   "inputs", "thickness", "wall_mask")
 DETECTION_MODES = ("standard", "ai", "hybrid")
-# Mode used for new uploads. Chosen from the measured comparison (eval/results/real_plans.md).
-DEFAULT_DETECTION = os.environ.get("ARCHNEXT_DETECTION", "standard")
+
+
+def _default_detection() -> str:
+    """Mode for new uploads (override with ARCHNEXT_DETECTION).
+
+    Provisionally Hybrid, from the preliminary comparison (eval/results/real_plans_preliminary.md and
+    synthetic_sanity.md): on 5 real annotated plans it found far more rooms, walls, doors and windows than
+    Standard, and unlike AI-only it kept room sizes as accurate as Standard on plans with a known scale.
+    Without the pretrained model installed, uploads use Standard.
+    """
+    env = os.environ.get("ARCHNEXT_DETECTION")
+    if env in DETECTION_MODES:
+        return env
+    return "hybrid" if cc.status()["available"] else "standard"
+
+
+DEFAULT_DETECTION = _default_detection()
 
 
 def _mark_exterior(walls: list[Wall], exterior: np.ndarray, t: float) -> None:
@@ -211,7 +226,9 @@ def prepare_inputs(data: bytes, mode: str = "standard", base: "PlanInputs | None
                 t3 = time.time()
                 ai = cc.predict(img.rgb)
                 timings["ai"] = time.time() - t3
-            det = ad.ai_walls(ai) if mode == "ai" else ad.hybrid_walls(ai, cv_det, img.soft)
+            # Hybrid = AI walls first, plus OpenCV pieces the AI partly supports (chosen on validation plans:
+            # it beat the OpenCV-first combination, see eval/results/real_plans_preliminary.md).
+            det = ad.ai_walls(ai) if mode == "ai" else ad.hybrid_ai_base(ai, cv_det)
             detection["used"] = mode
             detection["ai_seconds"] = ai.seconds
         except cc.ModelUnavailable as exc:

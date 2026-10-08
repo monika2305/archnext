@@ -108,3 +108,15 @@ def test_annotation_draft_is_never_scored_until_verified():
     draft["verified"] = True
     r = client.post(f"/api/plans/{d['id']}/evaluate", files={"file": ("a.json", json.dumps(draft), "application/json")})
     assert r.status_code == 200
+
+
+def test_default_detection_is_hybrid_only_when_the_model_is_installed(monkeypatch):
+    from app.pipeline import run
+
+    monkeypatch.delenv("ARCHNEXT_DETECTION", raising=False)
+    monkeypatch.setattr(cc, "status", lambda: {"available": True})
+    assert run._default_detection() == "hybrid"
+    monkeypatch.setattr(cc, "status", lambda: {"available": False})
+    assert run._default_detection() == "standard"
+    monkeypatch.setenv("ARCHNEXT_DETECTION", "ai")
+    assert run._default_detection() == "ai"

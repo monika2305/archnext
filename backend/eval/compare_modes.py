@@ -30,11 +30,10 @@ from eval.cubicasa_testset import annotation, fetch, split_list
 RESULTS = Path(__file__).resolve().parent / "results"
 MODES = ["standard", "ai_raw", "ai", "hybrid"]
 LABEL = {"standard": "Standard (OpenCV)", "ai_raw": "AI model (raw)", "ai": "AI + TopologyGuard/ScaleLock",
-         "hybrid": "Hybrid"}
+         "hybrid": "Hybrid (AI-first)"}
 # Hybrid variants for tuning on the validation split (all share OCR and the AI prediction).
-# hybrid_cut / hybrid_nodrop / hybrid_noadd scored the same as "hybrid" on the first validation plans and were
-# dropped to keep runs short; hybrid_aibase starts from the AI walls instead of the OpenCV walls.
-VARIANTS = {"hybrid_aibase": {}}
+# "hybrid" is the app's Hybrid (AI walls first). "hybrid_cvbase" is the OpenCV-first alternative it replaced.
+VARIANTS = {"hybrid_cvbase": {}}
 
 
 def wall_raster(walls: list[Wall], solids: list[dict], shape, openings: list[dict] = ()) -> np.ndarray:
@@ -73,11 +72,8 @@ def make_inputs(base: PlanInputs, data: bytes, mode: str, hybrid_kw: dict) -> Pl
     if mode == "standard":
         return prepare_inputs(data, "standard", base=base)   # raises if OpenCV finds no walls
     inp = prepare_inputs(data, "hybrid", base=base)
-    kw = VARIANTS.get(mode, hybrid_kw)
-    if mode == "hybrid_aibase" and inp.detection.get("used") == "hybrid":
-        inp.det = ad.hybrid_ai_base(inp.ai, base.cv_det)
-    elif kw and inp.detection.get("used") == "hybrid":
-        inp.det = ad.hybrid_walls(inp.ai, base.cv_det, inp.img.soft, **kw)
+    if mode == "hybrid_cvbase" and inp.detection.get("used") == "hybrid":
+        inp.det = ad.hybrid_walls(inp.ai, base.cv_det, inp.img.soft, **hybrid_kw)
     return inp
 
 
@@ -163,6 +159,8 @@ def markdown(summary: dict, args) -> str:
            "scale. Synthetic results do not establish real-world accuracy." if args.synthetic else
            f"Real floor plans: CubiCasa5K `{args.split}` split, first {args.n} plans after offset {args.offset}, "
            "human ground truth.")
+    if args.n < 20:
+        src = (f"**PRELIMINARY: only {args.n} plans. Not a final accuracy result.** " + src)
     lines = [src + " Same image, coordinates and rules for every mode.", "",
              "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     names = {"room_recall": "Rooms found (recall, IoU≥0.5)", "room_precision": "Rooms correct (precision)",
@@ -190,14 +188,14 @@ def main() -> None:
     ap.add_argument("--split", default="test")
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--offset", type=int, default=0)
-    ap.add_argument("--hybrid", default="", help="hybrid options, e.g. add=1,drop=1,cut=0")
+    ap.add_argument("--hybrid", default="", help="options of the OpenCV-first variant, e.g. add=1,drop=1,cut=0")
     ap.add_argument("--out", default="")
     ap.add_argument("--variants", action="store_true", help="also score the hybrid variants (tuning only)")
     ap.add_argument("--synthetic", action="store_true", help="ArchNext's synthetic plans (seeds from --offset)")
     args = ap.parse_args()
     if args.variants:
         MODES.extend(VARIANTS)
-        LABEL.update({k: k for k in VARIANTS})
+        LABEL.update({"hybrid_cvbase": "Hybrid, OpenCV-first (not used)"})
     kw = {}
     names = {"add": "add_missing", "drop": "drop_false", "cut": "cut_ai_openings"}
     for part in filter(None, args.hybrid.split(",")):
@@ -216,7 +214,7 @@ def main() -> None:
         rows.append(job())
         r = rows[-1]
         print(f"[{i}/{len(jobs)}] {r['plan']}: " + "  ".join(
-            f"{m}={'FAIL' if 'failed' in r[m] else round(r[m]['room_recall'] or 0, 2)}/{'' if 'failed' in r[m] else round(r[m]['wall_iou'], 2)}"
+            f"{m}={'FAIL' if 'failed' in r[m] else round(r[m]['room_recall'] or 0, 2)}/{'' if 'failed' in r[m] or r[m]['wall_iou'] is None else round(r[m]['wall_iou'], 2)}"
             for m in MODES), flush=True)
     summary = summarise(rows)
     print(json.dumps(summary, indent=1))

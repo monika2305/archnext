@@ -6,8 +6,9 @@ the coordinates stay those of the working image.
 
 AI mode     walls = predicted Wall pixels with predicted door / window spans cut out (so they become gaps that
             the opening detector turns into doors and windows).
-Hybrid mode walls = OpenCV wall mask, plus AI wall pieces that OpenCV missed when they are backed by ink in
-            the drawing, minus OpenCV pieces the AI confidently calls non-wall (furniture, symbols, text).
+Hybrid mode walls = AI walls, plus OpenCV wall pieces that the AI also partly sees as wall (``hybrid_ai_base``).
+            ``hybrid_walls`` (OpenCV walls completed / cleaned with the AI) is kept for comparison only: it scored
+            lower on the validation plans.
 In both modes door / window types come from the AI icon map, and unnamed rooms take the AI room class.
 """
 from __future__ import annotations
