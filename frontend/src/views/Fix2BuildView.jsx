@@ -261,8 +261,9 @@ export default function Fix2BuildView({ result, onResult, selection, onSelect })
                         selection={selection} onSelect={onSelect} onCommand={commit} onDraft={setDraft} busy={busy || !!preview} fitKey={fitKey} />
           </div>
           </div>
-          {/* Inspector docked below the plan so it never covers walls or rooms */}
-          <div className="border-t border-line px-3 py-2.5 max-h-[45%] overflow-auto scrollbar-thin">
+          {/* Inspector docked below the plan so it never covers walls or rooms. Fixed height: selecting something
+              must not resize the plan under the pointer (a drag would otherwise jump). */}
+          <div className="border-t border-line px-3 py-2.5 h-[164px] shrink-0 overflow-auto scrollbar-thin">
             <Inspector result={result} geometry={shown} selection={selection} busy={busy} wallHeight={wallHeight}
                        onPreview={startPreview} onRename={(id, name) => commit({ op: 'rename_room', room: id, name })} />
           </div>

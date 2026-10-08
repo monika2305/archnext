@@ -222,9 +222,10 @@ labelled as such. Wall thickness comes from the plan.
 
 ---
 
-## The four views
+## The views
 
 * **Upload** — large drop area, blueprint preview, one action: *Generate 3D*.
+* **Fix2Build** — side-by-side 2D editor and live 3D model with Synchronized View (see below).
 * **Analysis** — the blueprint fills the page with compact layer toggles (walls, rooms, doors & windows,
   issues) and zoom. A slim side panel holds the summary (rooms, walls, doors, windows, issues), the scale
   status with *Set scale*, and the issue list with Fix → Preview → Apply / Cancel → Undo and manual editing.
@@ -305,7 +306,7 @@ repository):
 
 ### Tests run
 
-* `cd backend && python -m pytest -q`: **29 tests** (the CubiCasa5K tests skip when the model is not installed):
+* `cd backend && python -m pytest -q`: **38 tests** (the CubiCasa5K tests skip when the model is not installed):
   * dimension parsing
   * TopologyGuard closes breaks but keeps openings
   * end-to-end reconstruction with auto scale under 3 % error
@@ -328,6 +329,11 @@ repository):
   * **conversion fixes**: screenshot borders ignored while walls near the edge (incl. thin double-line walls
     on tight crops) are kept; aligned walls are not bridged by a false opening; door/window type needs length
     coverage; hatched-wall holes are restored up to a real door; Hybrid ignores noisy OpenCV output
+  * **Fix2Build**: every editing command (add / move / delete wall, wall end, thickness, height, add / move /
+    resize / retype / delete opening, rename, reset), stable ids, undo / redo, preview, save + reopen, API
+* `cd frontend && npm test`: **7 tests** (3D meshes tagged with object ids for picking, per-wall height and metric
+  size in 3D, fixed 3D frame while editing, room bounds for camera focus, 2D room hit-testing, a room's doors and
+  windows, stale selections dropped)
 * Browser end-to-end (headless Chromium):
   * upload → Analysis → Fix preview → Apply → 3D Studio → GLB export
   * the exported GLB changes (the moved walls and the recomputed floors), and after Undo it is node-for-node
@@ -354,10 +360,59 @@ repository):
 * Single-floor plans only. Photographed plans with perspective distortion are not rectified.
 * Sessions are kept in memory: restarting the backend clears uploaded plans and fixes.
 
-## Fix2Build status
+## Fix2Build and Synchronized View
 
-**Implemented:** issue-based fixes with preview, apply and undo, and validated wall-end editing with
-snapping (above). **Not implemented:** editing room polygons or moving openings (no CAD editor).
+**Fix2Build** (tab *Fix2Build*) shows the 2D blueprint editor and the live 3D model side by side (resizable; each
+panel can go fullscreen; stacked on narrow screens). Every edit changes the one canonical building model and both
+panels, Analysis, Validation, 3D Studio and the GLB export follow it.
+
+| Action | How |
+|---|---|
+| Select a room / wall / door / window | click it in 2D **or** in 3D |
+| Move a wall | drag it (pieces joined by doors/windows move together; walls attached to it follow, so rooms stay closed) |
+| Move a wall end | select the wall, drag a cyan handle (snaps to wall ends and wall centre lines) |
+| Add a wall | *Draw wall* (W): click start, click end (snapping, straightened when nearly horizontal/vertical) |
+| Add a door / window | *Add door* (D) / *Add window* (N): click on a wall (the wall is cut, the 3D wall gets the opening) |
+| Move a door / window | drag it along its wall (it cannot run past the wall ends) |
+| Wall thickness / height, opening width, door ↔ window, delete | inspector under the plan → **Preview → Apply / Cancel** |
+| Rename a room | inspector → name → Enter |
+| Undo / Redo / Reset | Ctrl+Z / Ctrl+Y (or the toolbar); *Reset* returns to the detected geometry (undoable) |
+| Save / reopen | *Save* downloads `name.archnext.json`; drop it on the Upload page and *Open project* |
+| Export | *Export GLB* writes the current geometry (edits included, highlights excluded) |
+
+Shortcuts: V select, W wall, D door, N window, Delete, Enter (apply preview), Esc (cancel / clear), F (refocus).
+
+**Synchronized View.** Selecting a room in either panel highlights the *same* room (by id) in both: emerald floor,
+cyan floor outline, violet outline along the wall tops, amber doors and windows of that room, a floating card
+(name, area, length × width when the room is rectangular, id) and a smooth camera flight to the room from above the
+walls. *Full view* returns to the whole building. Clicking empty space clears the selection. Areas are labelled
+"(est.)" when the scale is estimated. The same selection is used in 3D Studio.
+
+**Architecture.**
+* One canonical model: the session's corrected geometry on the backend. Edits are commands
+  (`POST /api/plans/{id}/edit`, `backend/app/pipeline/editor.py`); each can be previewed (`dry_run`) and is
+  committed to the undo / redo history. The frontend renders this model only; drags are previewed locally and
+  replaced by the server result on release, so 2D and 3D cannot drift apart.
+* Stable ids: walls keep their ids (deleted ids are never reused); openings and rooms keep theirs across rebuilds
+  (matched by host walls / room overlap ≥ 50 %). A room changed beyond that gets a new id and the selection is
+  dropped rather than pointed at the wrong room; selections are also cleared when the plan or detection
+  configuration changes.
+* Doors and windows are gaps between wall pieces, so the 3D wall is genuinely cut. Openings the user created or
+  corrected persist and move with their walls; a manual edit never turns the old ink of a moved wall into a new
+  door or window.
+* No AI inference during editing. Manual edits keep the current scale (moving one wall does not re-scale the
+  building). TopologyGuard reports issues on the edited geometry but never rewrites user edits.
+
+**Known limitations.** Editing is done in 2D; the 3D panel selects and highlights (no 3D drag handles). On real
+plans an edit takes about 1 s on the server; during a drag the panels show a local approximation (rooms and areas
+update on release). Moving whole walls with their neighbours works for horizontal / vertical walls; oblique walls
+move alone. Only openings between two collinear wall pieces can be moved or resized (corner openings can be
+retyped or removed). A custom room name stays with the room id, so it is lost if an edit changes the room so much
+that it gets a new id. Uploaded plans live in memory: use *Save* to keep work across backend restarts.
+
+**Review 2 demo.** Upload a plan → *Generate 3D* → *Fix2Build* → click a bedroom in 2D (it glows in 3D, the camera
+flies to it, the card shows name and area) → drag one of its walls (3D wall moves, area recalculates) → Ctrl+Z
+(geometry and area return) → click a room in 3D (the 2D room lights up) → *Add door* on a wall → *Export GLB*.
 
 ## Project layout
 
@@ -368,6 +423,7 @@ backend/
   app/pipeline/            preprocess, walls, structure (openings), rooms, topology (TopologyGuard),
                            scalelock, measure (dimension parsing), ocr, run (orchestration)
   app/pipeline/fixes.py    remaining-issue detection, safe fix proposals, apply
+  app/pipeline/editor.py   Fix2Build editing commands, project save / reopen
   app/pipeline/cubicasa.py pretrained CubiCasa5K model: download, load, CPU inference
   app/pipeline/ai_detect.py AI / Hybrid predictions -> ArchNext wall detection, openings, room types
   app/evaluation.py        ground-truth metrics and the four ablation configurations
@@ -378,8 +434,10 @@ backend/
   eval/visual_compare.py   Original | Standard | AI | Hybrid picture
   tests/                   pytest suite
 frontend/
-  src/views/               Upload, Analysis, 3D Studio, Validation
-  src/components/          blueprint overlay (with wall-end editing), issue list, charts, walkthrough
+  src/views/               Upload, Analysis, 3D Studio, Fix2Build, Validation
+  src/components/          blueprint overlay, PlanEditor (Fix2Build 2D), ModelViewer (3D + Synchronized View),
+                           issue list, charts, walkthrough
+  src/views/Fix2BuildView  side-by-side workspace, inspector, undo / redo, save, export
   src/lib/buildModel.js    procedural Three.js building + GLB export source
 samples/                   generated plans + annotation files
 ```
