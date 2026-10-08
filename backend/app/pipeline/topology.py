@@ -59,6 +59,7 @@ def _make_axis(orient: str, a: float, b: float, c: float, th: float, base: Wall)
         nw = Wall(base.id, a, c, b, c, th, "h", base.exterior, "corrected")
     else:
         nw = Wall(base.id, c, a, c, b, th, "v", base.exterior, "corrected")
+    nw.height = base.height
     return nw
 
 

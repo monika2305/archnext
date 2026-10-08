@@ -17,10 +17,11 @@ from pydantic import BaseModel, Field
 
 from .evaluation import evaluate_session
 from .pipeline import cubicasa
+from .pipeline import editor
 from .pipeline.preprocess import PlanImageError
 from .pipeline.run import (DEFAULT_DETECTION, PlanSession, annotation_draft, apply_manual_scale, apply_user_fix,
-                           compare_configs, edit_wall_end, process_plan, reset_scale, session_result, set_config,
-                           undo_user_fix)
+                           compare_configs, edit_wall_end, process_plan, redo_user_fix, reset_scale, session_result,
+                           set_config, undo_user_fix)
 
 log = logging.getLogger("archnext")
 logging.basicConfig(level=logging.INFO)
@@ -138,6 +139,53 @@ def undo_fix(plan_id: str):
             undo_user_fix(sess)
         except KeyError as exc:
             raise HTTPException(409, str(exc.args[0])) from exc
+    return session_result(sess)
+
+
+@app.post("/api/plans/{plan_id}/fixes/redo")
+def redo_fix(plan_id: str):
+    sess = _get(plan_id)
+    with sess.lock:
+        try:
+            redo_user_fix(sess)
+        except KeyError as exc:
+            raise HTTPException(409, str(exc.args[0])) from exc
+    return session_result(sess)
+
+
+@app.post("/api/plans/{plan_id}/edit")
+def fix2build_edit(plan_id: str, body: dict):
+    """One Fix2Build command on the canonical geometry (see app/pipeline/editor.py). ``dry_run`` previews it."""
+    sess = _get(plan_id)
+    dry = bool(body.get("dry_run"))
+    with sess.lock:
+        out = editor.apply_edit(sess, body, dry_run=dry)
+        if dry:
+            return {"check": out}
+        if not out["ok"]:
+            raise HTTPException(409, out["reason"])
+        return {**session_result(sess), "edit": out}
+
+
+@app.get("/api/plans/{plan_id}/project")
+def save_project(plan_id: str):
+    """The edited building as a project file (image, settings, geometry, names) that can be reopened."""
+    sess = _get(plan_id)
+    with sess.lock:
+        return editor.export_project(sess)
+
+
+@app.post("/api/projects")
+async def open_project(file: UploadFile = File(...)):
+    try:
+        proj = json.loads((await file.read()).decode("utf-8"))
+        sess = editor.import_project(proj)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(400, f"The project file could not be opened: {exc}") from exc
+    with _lock:
+        _sessions[sess.id] = sess
+        while len(_sessions) > MAX_SESSIONS:
+            _sessions.popitem(last=False)
     return session_result(sess)
 
 

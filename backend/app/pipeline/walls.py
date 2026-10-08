@@ -23,8 +23,9 @@ class Wall:
     thickness: float
     orient: str  # 'h', 'v' or 'd'
     exterior: bool = False
-    source: str = "auto"  # 'auto' | 'corrected' | 'edited' (future Fix2Build)
+    source: str = "auto"  # 'auto' | 'corrected' | 'edited' (Fix / manual edit / Fix2Build)
     notes: list[str] = field(default_factory=list)
+    height: float | None = None   # metres; None = the building's wall height
 
     @property
     def length(self) -> float:
@@ -35,12 +36,12 @@ class Wall:
             "id": self.id, "x1": round(self.x1, 2), "y1": round(self.y1, 2),
             "x2": round(self.x2, 2), "y2": round(self.y2, 2),
             "thickness": round(self.thickness, 2), "orient": self.orient,
-            "exterior": self.exterior, "source": self.source,
+            "exterior": self.exterior, "source": self.source, "height": self.height,
         }
 
     def copy(self) -> "Wall":
         return Wall(self.id, self.x1, self.y1, self.x2, self.y2, self.thickness, self.orient,
-                    self.exterior, self.source, list(self.notes))
+                    self.exterior, self.source, list(self.notes), self.height)
 
 
 @dataclass

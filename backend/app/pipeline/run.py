@@ -24,7 +24,7 @@ from . import fixes as fx
 from . import topology as tg
 from .ocr import TextItem, read_text
 from .preprocess import PreparedImage, prepare
-from .rooms import extract_rooms
+from .rooms import extract_rooms, room_type_for
 from .structure import MAX_OPENING, detect_openings, find_gaps, opening_polygon, wall_polygon
 from .walls import Wall, WallDetection, detect_walls
 
@@ -105,13 +105,16 @@ class PlanSession:
     created: float = field(default_factory=time.time)
     inputs: "PlanInputs | None" = None
     variants: dict = field(default_factory=dict)   # (detection, topology_guard, scale_lock) -> saved state
+    redo: list = field(default_factory=list)       # states undone, re-applied by redo_user_fix
+    room_names: dict = field(default_factory=dict) # room id -> name given by the user
+    next_ids: dict = field(default_factory=dict)   # next free number per id prefix ("w", "o", "r")
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 # Everything that differs between pipeline configurations; switching swaps these as a unit.
 VARIANT_FIELDS = ("original", "corrected", "issues", "measurements", "auto_scale", "scale", "warnings", "edited",
                   "config", "auto_version", "auto_issues", "auto_scale_initial", "fix_specs", "fix_log", "history",
-                  "inputs", "thickness", "wall_mask")
+                  "inputs", "thickness", "wall_mask", "redo", "room_names", "next_ids")
 DETECTION_MODES = ("standard", "ai", "hybrid")
 
 
@@ -171,7 +174,7 @@ def _build_version(walls: list[Wall], solids: list[dict], openings: list[dict], 
     # sliding doors, glazed partitions or door frames than windows, so they are not called windows.
     ext = {w.id for w in walls if w.exterior}
     for o in openings:
-        if o["type"] == "window" and not any(h in ext for h in o["hosts"]):
+        if o["type"] == "window" and o.get("source") != "user" and not any(h in ext for h in o["hosts"]):
             o["type"], o["confidence"] = "opening", "low"
     dangling, total, ok = tg.endpoint_report(walls, t, openings)
     return GeometryVersion(walls, openings, rooms, labels, exterior, dangling, total, ok, solids)
@@ -306,6 +309,7 @@ def process_plan(data: bytes, filename: str = "plan", topology_guard: bool = Tru
     sess.auto_version = corrected
     sess.auto_issues = auto_issues
     sess.auto_scale_initial = dict(auto_scale)
+    init_ids(sess)
     refresh_issues(sess)
     if not corrected.rooms:
         warnings.append("No enclosed rooms were found; the model shows walls only.")
@@ -425,25 +429,185 @@ def refresh_issues(sess: PlanSession) -> None:
     sess.issues = list(sess.auto_issues) + fixed + live
 
 
-def _rebuild(sess: PlanSession, walls: list[Wall]) -> GeometryVersion:
+def _new_id(sess: PlanSession, prefix: str, taken: set[str]) -> str:
+    """Never-reused id: ids of deleted objects are not handed out again."""
+    n = sess.next_ids.get(prefix, 1)
+    while f"{prefix}{n}" in taken:
+        n += 1
+    sess.next_ids[prefix] = n + 1
+    return f"{prefix}{n}"
+
+
+def init_ids(sess: PlanSession) -> None:
+    """Start the id counters above every id in use (detected geometry is numbered 1..n)."""
+    for prefix, items in (("w", [w.id for v in (sess.original, sess.corrected) for w in v.walls]),
+                          ("o", [o["id"] for v in (sess.original, sess.corrected) for o in v.openings]),
+                          ("r", [r["id"] for v in (sess.original, sess.corrected) for r in v.rooms])):
+        nums = [int(i[1:]) for i in items if i[1:].isdigit()]
+        sess.next_ids[prefix] = max([sess.next_ids.get(prefix, 1) - 1] + nums) + 1
+
+
+def host_gap(a: Wall, b: Wall) -> tuple | None:
+    """The gap between the facing ends of two collinear wall pieces: (pa, pb, end_a, end_b) or None."""
+    best = None
+    for ea, pa in ((0, (a.x1, a.y1)), (1, (a.x2, a.y2))):
+        for eb, pb in ((0, (b.x1, b.y1)), (1, (b.x2, b.y2))):
+            d = float(np.hypot(pa[0] - pb[0], pa[1] - pb[1]))
+            if best is None or d < best[0]:
+                best = (d, pa, pb, ea, eb)
+    d, pa, pb, ea, eb = best
+    if d < 1.0:
+        return None
+    ua = np.array([a.x2 - a.x1, a.y2 - a.y1]) / max(a.length, 1e-6)
+    ub = np.array([b.x2 - b.x1, b.y2 - b.y1]) / max(b.length, 1e-6)
+    gap = np.array([pb[0] - pa[0], pb[1] - pa[1]]) / d
+    tol = max(a.thickness, b.thickness) / 2 + 1.5
+    if abs(float(ua @ ub)) < 0.98 or abs(float(ua @ gap)) < 0.98:
+        return None
+    off = abs(float(np.cross(ua, np.array([pb[0] - a.x1, pb[1] - a.y1]))))   # b's end from a's centre line
+    if off > tol:
+        return None
+    return pa, pb, ea, eb
+
+
+def opening_between(a: Wall, b: Wall, o: dict) -> dict | None:
+    """Opening ``o`` re-derived from its two host walls (it moves with them), or None if they no longer frame it."""
+    g = host_gap(a, b)
+    if g is None:
+        return None
+    pa, pb, _, _ = g
+    out = dict(o)
+    out.update(x1=float(pa[0]), y1=float(pa[1]), x2=float(pb[0]), y2=float(pb[1]),
+               width=float(np.hypot(pb[0] - pa[0], pb[1] - pa[1])), thickness=float(max(a.thickness, b.thickness)),
+               hosts=[a.id, b.id], host_kind="collinear", corner=False)
+    return out
+
+
+def _carry_ids(sess: PlanSession, prev: GeometryVersion, new: GeometryVersion) -> None:
+    """Keep opening and room ids stable across a rebuild (matched by hosts / overlap), new objects get new ids."""
+    t = sess.thickness
+    taken = {o["id"] for o in prev.openings}
+    used: set[str] = set()
+    by_hosts = {tuple(sorted(o["hosts"])): o["id"] for o in prev.openings}
+    for o in new.openings:
+        oid = o.get("keep_id") or by_hosts.get(tuple(sorted(o["hosts"])))
+        if oid is None or oid in used:
+            cx, cy = (o["x1"] + o["x2"]) / 2, (o["y1"] + o["y2"]) / 2
+            near = [p for p in prev.openings if p["id"] not in used and np.hypot(
+                (p["x1"] + p["x2"]) / 2 - cx, (p["y1"] + p["y2"]) / 2 - cy) <= max(t, 0.35 * p["width"])]
+            oid = near[0]["id"] if near else None
+        if oid is None or oid in used:
+            oid = _new_id(sess, "o", taken | used)
+        o.pop("keep_id", None)
+        o["id"] = oid
+        used.add(oid)
+    # Rooms: the previous room covering most of a new room (IoU >= 0.5) lends it its id.
+    taken_r = {r["id"] for r in prev.rooms}
+    used_r: set[str] = set()
+    if prev.rooms and new.rooms:
+        a, b = prev.labels.ravel(), new.labels.ravel()
+        both = (a > 0) & (b > 0)
+        pairs, counts = np.unique(np.stack([a[both], b[both]]), axis=1, return_counts=True)
+        area_a = np.bincount(a, minlength=len(prev.rooms) + 1)
+        area_b = np.bincount(b, minlength=len(new.rooms) + 1)
+        cand = []
+        for (pa, pb), c in zip(pairs.T, counts):
+            iou = c / (area_a[pa] + area_b[pb] - c)
+            if iou >= 0.5:
+                cand.append((iou, int(pa), int(pb)))
+        for iou, pa, pb in sorted(cand, reverse=True):
+            rid = prev.rooms[pa - 1]["id"]
+            room = new.rooms[pb - 1]
+            if rid in used_r or room.get("_carried"):
+                continue
+            room["id"], room["_carried"] = rid, True
+            used_r.add(rid)
+    for room in new.rooms:
+        if not room.pop("_carried", False):
+            room["id"] = _new_id(sess, "r", taken_r | used_r)
+            used_r.add(room["id"])
+
+
+def apply_room_names(sess: PlanSession, version: GeometryVersion) -> None:
+    for r in version.rooms:
+        if r["id"] in sess.room_names:
+            r["name"] = sess.room_names[r["id"]]
+            r["user_named"] = True
+            r["type"] = room_type_for(r["name"])
+
+
+def _rebuild(sess: PlanSession, walls: list[Wall], keep: list[dict] | None = None,
+             known_only: bool = False) -> GeometryVersion:
+    """Openings, rooms and checks for a new wall set.
+
+    Openings the user created or corrected (``source == "user"``) are kept and follow their host walls; all
+    other openings are re-detected from the wall gaps. Opening and room ids stay stable.
+
+    ``known_only`` (manual editing): only openings that already existed survive. A gap the user creates is open
+    space, not a door / window inferred from the old ink of the wall that was there.
+    """
     t = sess.thickness
     img = sess.image
     ai = sess.inputs.ai_used if sess.inputs else None
     openings = _openings(walls, t, img, ai)
     if sess.config.get("topology_guard", True):
         openings, _ = tg.validate_openings(walls, openings, t)
-    return _build_version(walls, sess.corrected.solids, openings, img.dark.shape, t, sess.texts, ai)
+    if known_only:
+        prev = sess.corrected.openings
+        hosts = {tuple(sorted(o["hosts"])) for o in prev}
+
+        def known(d):
+            if tuple(sorted(d["hosts"])) in hosts:
+                return True
+            cx, cy = (d["x1"] + d["x2"]) / 2, (d["y1"] + d["y2"]) / 2
+            return any(np.hypot((p["x1"] + p["x2"]) / 2 - cx, (p["y1"] + p["y2"]) / 2 - cy) <= max(t, 0.35 * p["width"])
+                       for p in prev)
+        openings = [d for d in openings if known(d)]
+    keep = [o for o in (sess.corrected.openings if keep is None else keep) if o.get("source") == "user"]
+    by_id = {w.id: w for w in walls}
+    for o in keep:
+        a, b = (by_id.get(h) for h in o["hosts"])
+        if a is None or b is None:
+            continue
+        g = opening_between(a, b, o)
+        if g is None:
+            continue
+        op = opening_polygon(g)
+        openings = [d for d in openings if op.intersection(opening_polygon(d)).area <= 0.3 * min(op.area, opening_polygon(d).area)]
+        g["keep_id"] = o["id"]
+        openings.append(g)
+    version = _build_version(walls, sess.corrected.solids, openings, img.dark.shape, t, sess.texts, ai)
+    _carry_ids(sess, sess.corrected, version)
+    apply_room_names(sess, version)
+    return version
 
 
-def _commit(sess: PlanSession, version: GeometryVersion, log: dict) -> None:
-    """Make ``version`` the current geometry, keeping an undo snapshot and refreshing scale and checks."""
-    sess.history.append((sess.corrected, list(sess.fix_log), sess.measurements, dict(sess.auto_scale), dict(sess.scale)))
-    del sess.history[:-20]
+def _snapshot(sess: PlanSession) -> tuple:
+    return (sess.corrected, list(sess.fix_log), sess.measurements, dict(sess.auto_scale), dict(sess.scale),
+            dict(sess.room_names))
+
+
+def _restore(sess: PlanSession, snap: tuple) -> None:
+    sess.corrected, sess.fix_log, sess.measurements, sess.auto_scale, scale, sess.room_names = snap
+    if sess.scale["status"] != "manual":
+        sess.scale = scale
+    sess.edited = bool(sess.fix_log)
+    refresh_issues(sess)
+
+
+def _commit(sess: PlanSession, version: GeometryVersion, log: dict, rescale: bool = True) -> None:
+    """Make ``version`` the current geometry, keeping an undo snapshot and refreshing scale and checks.
+
+    ``rescale=False`` (manual editing) keeps the current scale: moving one wall must not silently change the
+    size of the whole building."""
+    sess.history.append(_snapshot(sess))
+    del sess.history[:-50]
+    sess.redo.clear()
     sess.corrected = version
-    if sess.config.get("scale_lock", True):
+    if rescale and sess.config.get("scale_lock", True):
         sess.measurements, sess.auto_scale = _auto_scale(sess.texts, sess.corrected, sess.image, sess.wall_mask,
                                                          sess.thickness)
-    if sess.scale["status"] != "manual":
+    if rescale and sess.scale["status"] != "manual":
         sess.scale = _scale_from(sess.auto_scale, sess.corrected, sess.thickness)
     sess.fix_log.append(log)
     sess.edited = True
@@ -583,11 +747,15 @@ def edit_wall_end(sess: PlanSession, wall_id: str, end: int, x: float, y: float,
 def undo_user_fix(sess: PlanSession) -> None:
     if not sess.history:
         raise KeyError("There is nothing to undo.")
-    sess.corrected, sess.fix_log, sess.measurements, sess.auto_scale, scale = sess.history.pop()
-    if sess.scale["status"] != "manual":
-        sess.scale = scale
-    sess.edited = bool(sess.fix_log)
-    refresh_issues(sess)
+    sess.redo.append(_snapshot(sess))
+    _restore(sess, sess.history.pop())
+
+
+def redo_user_fix(sess: PlanSession) -> None:
+    if not sess.redo:
+        raise KeyError("There is nothing to redo.")
+    sess.history.append(_snapshot(sess))
+    _restore(sess, sess.redo.pop())
 
 
 def annotation_draft(sess: PlanSession) -> dict:
@@ -669,6 +837,7 @@ def _room_out(r: dict, s: float) -> dict:
     out = {k: r[k] for k in ("id", "name", "type", "polygon", "centroid", "rectangularity", "label_texts")}
     out["name"] = r["name"] or r.get("ai_name") or f"Room {r['id'][1:]}"
     out["named"] = r["name"] is not None
+    out["user_named"] = bool(r.get("user_named"))
     out["area_m2"] = round(r["area_px"] * s * s, 2)
     out["length_m"] = round(r["rect_px"][0] * s, 2)
     out["width_m"] = round(r["rect_px"][1] * s, 2)
@@ -735,7 +904,7 @@ def _session_result(sess: PlanSession) -> dict:
                      "fixed": sum(1 for i in sess.issues if i.status == "fixed"),
                      "review": sum(1 for i in sess.issues if i.status == "review"),
                      "fixable": sum(1 for i in sess.issues if i.status == "review" and i.fix),
-                     "can_undo": bool(sess.history), "edited": sess.edited},
+                     "can_undo": bool(sess.history), "can_redo": bool(sess.redo), "edited": sess.edited},
         "texts": [t.to_dict() for t in sess.texts],
         "config": dict(sess.config),
         "detection": {**(sess.inputs.detection if sess.inputs else {"requested": "standard", "used": "standard"}),
