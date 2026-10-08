@@ -1,0 +1,60 @@
+import { Box, Camera, Download, Film, FlaskConical, LayoutGrid, Plus, ShieldCheck } from 'lucide-react'
+
+// Mode B header: same structure and styling as the Mode A header (components/Header.jsx), its own tabs.
+export const MODE_B_TABS = [
+  { key: 'overview', label: 'Overview', icon: LayoutGrid, needs: null },
+  { key: 'reconstruction', label: 'Reconstruction', icon: Film, needs: 'project' },
+  { key: 'scene', label: '3D Scene', icon: Box, needs: 'scene' },
+  { key: 'visiontrust', label: 'VisionTrust', icon: ShieldCheck, needs: 'scene' },
+  { key: 'nbv', label: 'NextBestView', icon: Camera, needs: 'scene' },
+  { key: 'research', label: 'Research', icon: FlaskConical, needs: null },
+  { key: 'export', label: 'Export', icon: Download, needs: 'scene' },
+]
+
+export function tabEnabled(tab, { project, scene }) {
+  if (tab.needs === 'project') return !!project
+  if (tab.needs === 'scene') return !!scene
+  return true
+}
+
+export default function ModeBHeader({ view, onView, project, scene, onNew }) {
+  return (
+    <header className="h-14 shrink-0 bg-white/90 backdrop-blur border-b border-line flex items-center px-3 lg:px-5 gap-3 lg:gap-6">
+      <div className="flex items-center gap-2.5 xl:min-w-[230px] shrink-0">
+        <svg viewBox="0 0 32 32" className="w-7 h-7" aria-hidden>
+          <rect width="32" height="32" rx="7" fill="#3F6A8F" />
+          <path d="M8 23V9h9v6h7v8z" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinejoin="round" />
+        </svg>
+        <div className="leading-tight">
+          <div className="text-[14px] font-semibold tracking-tight flex items-center gap-1.5">ArchNext
+            <span className="chip bg-accent-soft text-accent-dark h-5 px-1.5 text-[10.5px]">Video → 3D</span></div>
+          <div className="text-[11px] text-ink-mute hidden lg:block">Reconstruct what you see. Reveal what you assume.</div>
+        </div>
+      </div>
+
+      <nav className="flex items-center gap-1 mx-auto" aria-label="Mode B">
+        {MODE_B_TABS.map((t) => {
+          const Icon = t.icon
+          const disabled = !tabEnabled(t, { project, scene })
+          const active = view === t.key
+          return (
+            <button key={t.key} disabled={disabled} onClick={() => onView(t.key)} title={t.label}
+              className={`h-9 px-3 rounded-lg flex items-center gap-2 whitespace-nowrap text-[13px] font-medium transition-colors
+                ${active ? 'bg-accent-soft text-accent-dark' : 'text-ink-soft hover:bg-paper'}
+                disabled:opacity-35 disabled:hover:bg-transparent disabled:cursor-not-allowed`}>
+              <Icon size={15} strokeWidth={1.8} />
+              <span className="hidden xl:inline">{t.label}</span>
+            </button>
+          )
+        })}
+      </nav>
+
+      <div className="flex items-center gap-3 xl:min-w-[230px] justify-end shrink-0">
+        {project && <span className="hidden xl:block text-[12px] text-ink-soft font-medium truncate max-w-[160px]" title={project.name}>{project.name}</span>}
+        {project && (
+          <button className="btn-secondary btn-sm" onClick={onNew} title="New video"><Plus size={14} /><span className="hidden lg:inline">New video</span></button>
+        )}
+      </div>
+    </header>
+  )
+}

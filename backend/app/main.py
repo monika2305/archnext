@@ -349,6 +349,14 @@ def benchmark():
     return {"available": True, **json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))}
 
 
+# Mode B (room video -> 3D) is a separate dashboard with its own router under /api/mode-b; nothing above changes.
+try:
+    from mode_b.api import router as mode_b_router
+    app.include_router(mode_b_router)
+except Exception:  # noqa: BLE001  (Mode A keeps working if Mode B cannot be loaded)
+    log.exception("Mode B API not loaded")
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
 def unknown_api(path: str, request: Request):
     """An API path that does not exist is a 404 with its method and path, never the web page below (which turned

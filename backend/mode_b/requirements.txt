@@ -1,0 +1,11 @@
+# Mode B worker environment (backend/mode_b/.venv), separate from Mode A's backend/.venv.
+# CPU-only: pycolmap wheels on PyPI have no CUDA, so dense multi-view stereo (PatchMatch) is not available.
+pycolmap==4.2.1
+opencv-python-headless>=4.8
+numpy>=1.24
+scipy>=1.10
+# tests
+pytest>=7.4
+fastapi>=0.110
+httpx>=0.27
+python-multipart>=0.0.9
