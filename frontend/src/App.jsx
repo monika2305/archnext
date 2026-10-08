@@ -4,6 +4,8 @@ import UploadView from './views/UploadView.jsx'
 import AnalysisView from './views/AnalysisView.jsx'
 import StudioView from './views/StudioView.jsx'
 import ValidationView from './views/ValidationView.jsx'
+import Fix2BuildView from './views/Fix2BuildView.jsx'
+import { validSelection } from './lib/planGeometry.js'
 import { api } from './lib/api.js'
 
 export default function App() {
@@ -15,10 +17,24 @@ export default function App() {
   const [result, setResult] = useState(null)
   const [configBusy, setConfigBusy] = useState(false)
   const [configError, setConfigError] = useState('')
+  // Selection shared by every page (Analysis, 3D Studio, Fix2Build): { kind: 'room' | 'wall' | 'opening', id }
+  const [selection, setSelection] = useState(null)
+
+  // An edit, undo, mode switch or new plan may remove the selected object: drop it instead of highlighting
+  // something else.
+  useEffect(() => {
+    setSelection((sel) => validSelection(result?.geometry?.corrected, sel))
+  }, [result])
+  // Another plan or another detection / TopologyGuard / ScaleLock configuration is different geometry: an id there
+  // may name a different room, so the selection is cleared rather than remapped by id.
+  const cfg = result?.config
+  const geometryKey = result ? `${result.id}|${cfg?.detection}|${cfg?.topology_guard}|${cfg?.scale_lock}` : ''
+  useEffect(() => { setSelection(null) }, [geometryKey])
 
   useEffect(() => () => preview && URL.revokeObjectURL(preview), [preview])
 
   const chooseFile = useCallback((f) => {
+    setSelection(null)
     setFile(f)
     setPreview(f ? URL.createObjectURL(f) : null)
     setResult(null)
@@ -32,7 +48,8 @@ export default function App() {
     setStatus('processing')
     setError('')
     try {
-      const r = await api.upload(file)
+      // A saved ArchNext project reopens the edited building; an image is processed from scratch.
+      const r = file.name.endsWith('.json') ? await api.openProject(file) : await api.upload(file)
       setResult(r)
       setStatus('ready')
       setView('analysis')
@@ -70,7 +87,10 @@ export default function App() {
           <AnalysisView result={result} onResult={setResult} onStudio={() => setView('studio')}
                         onConfig={changeConfig} configBusy={configBusy} configError={configError} />
         )}
-        {view === 'studio' && result && <StudioView result={result} />}
+        {view === 'studio' && result && <StudioView result={result} selection={selection} onSelect={setSelection} />}
+        {view === 'fix2build' && result && (
+          <Fix2BuildView result={result} onResult={setResult} selection={selection} onSelect={setSelection} />
+        )}
         {view === 'validation' && result && (
           <ValidationView result={result} onConfig={changeConfig} configBusy={configBusy} configError={configError} />
         )}

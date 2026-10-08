@@ -1,22 +1,29 @@
 import * as THREE from 'three'
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { ROOM_COLORS } from './format.js'
 
 /**
- * Build a THREE.Group of the reconstructed building from detected (TopologyGuard-corrected)
- * geometry. Units are metres; the plan x axis maps to X and the plan y axis maps to Z.
+ * Procedural 3D building from the canonical geometry (walls, openings, rooms in image pixels).
+ * Units are metres; plan x maps to X and plan y maps to Z.
+ *
+ * The frame (origin) comes from the ORIGINAL detected walls, so it stays fixed while the geometry is edited:
+ * the camera does not jump when a wall moves.
  */
 export function planFrame(result) {
-  const walls = result.geometry.corrected.walls
+  const walls = (result.geometry.original?.walls?.length ? result.geometry.original : result.geometry.corrected).walls
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const w of walls) {
     minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2)
     minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2)
   }
+  if (!Number.isFinite(minX)) { minX = 0; minY = 0; maxX = result.image.width; maxY = result.image.height }
   const s = result.scale.meters_per_px
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
   return {
-    s, cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+    s, cx, cy,
     sizeX: (maxX - minX) * s, sizeZ: (maxY - minY) * s,
-    toWorld: (x, y) => [(x - (minX + maxX) / 2) * s, (y - (minY + maxY) / 2) * s],
+    toWorld: (x, y) => [(x - cx) * s, (y - cy) * s],
+    toPlan: (X, Z) => [X / s + cx, Z / s + cy],
   }
 }
 
@@ -45,41 +52,51 @@ function boxAlong(frame, x1, y1, x2, y2, thickness, y0, y1h, material, name) {
   return mesh
 }
 
-export function buildModel(result, { wallHeight = 2.7, doorHeight = 2.1, sill = 0.9, head = 2.1 } = {}) {
+const tag = (obj, kind, id) => { obj.userData = { ...obj.userData, kind, id }; return obj }
+
+/** Height of a wall in metres (its own height if the user set one, otherwise the building's). */
+export const wallHeightOf = (w, wallHeight) => (w.height ?? wallHeight)
+
+export function buildModel(result, { wallHeight = 2.7, doorHeight = 2.1, sill = 0.9, head = 2.1 } = {}, geometry) {
   const frame = planFrame(result)
-  const g = result.geometry.corrected
+  const g = geometry || result.geometry.corrected
   const root = new THREE.Group()
   root.name = 'ArchNext building'
   const mats = Object.fromEntries(Object.entries(MAT).map(([k, f]) => [k, f()]))
   const wallsGroup = new THREE.Group(); wallsGroup.name = 'Walls'
   const openGroup = new THREE.Group(); openGroup.name = 'Openings'
   const floorGroup = new THREE.Group(); floorGroup.name = 'Floors'
+  const hostHeight = Object.fromEntries(g.walls.map((w) => [w.id, wallHeightOf(w, wallHeight)]))
 
   for (const w of g.walls) {
-    const m = boxAlong(frame, w.x1, w.y1, w.x2, w.y2, w.thickness, 0, wallHeight,
+    const m = boxAlong(frame, w.x1, w.y1, w.x2, w.y2, w.thickness, 0, wallHeightOf(w, wallHeight),
       w.exterior ? mats.wallExt : mats.wallInt, `${w.exterior ? 'Exterior' : 'Interior'} wall ${w.id}`)
-    if (m) wallsGroup.add(m)
+    if (m) wallsGroup.add(tag(m, 'wall', w.id))
   }
   for (const s of g.solids || []) {
     const m = boxAlong(frame, s.x0, (s.y0 + s.y1) / 2, s.x1, (s.y0 + s.y1) / 2, s.y1 - s.y0, 0, wallHeight, mats.wallExt, 'Solid')
     if (m) wallsGroup.add(m)
   }
 
-  const dh = Math.min(doorHeight, wallHeight - 0.05)
-  const hh = Math.min(head, wallHeight - 0.05)
   for (const o of g.openings) {
+    // An opening is as tall as the walls framing it.
+    const top = Math.max(...o.hosts.map((h) => hostHeight[h] ?? wallHeight), 1)
+    const dh = Math.min(doorHeight, top - 0.05)
+    const hh = Math.min(head, top - 0.05)
+    const og = tag(new THREE.Group(), 'opening', o.id)
+    og.name = `Opening ${o.id}`
     if (o.type === 'window') {
       const sill0 = Math.min(sill, hh - 0.3)
       const parts = [
         boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness, 0, sill0, mats.lintel, `Window sill ${o.id}`),
-        boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness, hh, wallHeight, mats.lintel, `Window head ${o.id}`),
+        boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness, hh, top, mats.lintel, `Window head ${o.id}`),
         boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness * 0.15, sill0, hh, mats.glass, `Glass ${o.id}`),
         boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness * 1.02, sill0 - 0.03, sill0, mats.frame, `Window frame ${o.id}`),
       ]
-      parts.forEach((p) => { if (p) { if (p.name.startsWith('Glass')) p.castShadow = false; openGroup.add(p) } })
+      parts.forEach((p) => { if (p) { if (p.name.startsWith('Glass')) p.castShadow = false; og.add(tag(p, 'opening', o.id)) } })
     } else {
-      const lintel = boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness, dh, wallHeight, mats.lintel, `${o.type === 'door' ? 'Door' : 'Opening'} head ${o.id}`)
-      if (lintel) openGroup.add(lintel)
+      const lintel = boxAlong(frame, o.x1, o.y1, o.x2, o.y2, o.thickness, dh, top, mats.lintel, `${o.type === 'door' ? 'Door' : 'Opening'} head ${o.id}`)
+      if (lintel) og.add(tag(lintel, 'opening', o.id))
       if (o.type === 'door') {
         // Door leaf shown slightly open from the first jamb.
         const [ax, az] = frame.toWorld(o.x1, o.y1)
@@ -92,21 +109,17 @@ export function buildModel(result, { wallHeight = 2.7, doorHeight = 2.1, sill = 
         leaf.position.set(width * 0.48, (dh - 0.02) / 2, 0)
         leaf.castShadow = true
         leaf.name = `Door leaf ${o.id}`
-        pivot.add(leaf)
+        pivot.add(tag(leaf, 'opening', o.id))
         pivot.name = `Door ${o.id}`
-        openGroup.add(pivot)
+        og.add(pivot)
       }
     }
+    openGroup.add(og)
   }
 
   for (const r of g.rooms) {
     if (r.polygon.length < 3) continue
-    let pts2 = r.polygon.map(([x, y]) => {
-      const [X, Z] = frame.toWorld(x, y)
-      return new THREE.Vector2(X, -Z)
-    })
-    if (THREE.ShapeUtils.isClockWise(pts2)) pts2 = pts2.reverse()
-    const shape = new THREE.Shape(pts2)
+    const shape = roomShape(frame, r.polygon)
     const geo = new THREE.ShapeGeometry(shape)
     geo.rotateX(-Math.PI / 2)
     const mat = new THREE.MeshStandardMaterial({ name: `Floor ${r.type}`, color: ROOM_COLORS[r.type] || ROOM_COLORS.unknown, roughness: 0.85 })
@@ -114,7 +127,7 @@ export function buildModel(result, { wallHeight = 2.7, doorHeight = 2.1, sill = 
     mesh.position.y = 0.012
     mesh.receiveShadow = true
     mesh.name = `Floor ${r.name}`
-    mesh.userData = { room: r.name, area_m2: r.area_m2 }
+    mesh.userData = { kind: 'room', id: r.id, room: r.name, area_m2: r.area_m2 }
     floorGroup.add(mesh)
   }
 
@@ -122,11 +135,49 @@ export function buildModel(result, { wallHeight = 2.7, doorHeight = 2.1, sill = 
   return { group: root, frame }
 }
 
+export function roomShape(frame, polygon) {
+  let pts = polygon.map(([x, y]) => {
+    const [X, Z] = frame.toWorld(x, y)
+    return new THREE.Vector2(X, -Z)
+  })
+  if (THREE.ShapeUtils.isClockWise(pts)) pts = pts.reverse()
+  return new THREE.Shape(pts)
+}
+
+/** World-space bounds of a room (for camera focus). */
+export function roomBounds(frame, room) {
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity
+  for (const [x, y] of room.polygon) {
+    const [X, Z] = frame.toWorld(x, y)
+    minX = Math.min(minX, X); maxX = Math.max(maxX, X); minZ = Math.min(minZ, Z); maxZ = Math.max(maxZ, Z)
+  }
+  return { cx: (minX + maxX) / 2, cz: (minZ + maxZ) / 2, sx: maxX - minX, sz: maxZ - minZ }
+}
+
 /** 2D wall rectangles in metres for walkthrough collision. */
-export function collisionRects(result, frame) {
-  return result.geometry.corrected.walls.map((w) => {
+export function collisionRects(result, frame, geometry) {
+  return (geometry || result.geometry.corrected).walls.map((w) => {
     const [ax, az] = frame.toWorld(w.x1, w.y1)
     const [bx, bz] = frame.toWorld(w.x2, w.y2)
     return { ax, az, bx, bz, half: (w.thickness * frame.s) / 2 }
   })
+}
+
+/** GLB of the canonical geometry, built fresh so no selection highlight or preview ends up in the file. */
+export function exportGLB(result, opts) {
+  const { group } = buildModel(result, opts)
+  return new Promise((resolve, reject) => {
+    new GLTFExporter().parse(group, (glb) => {
+      group.traverse((o) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose() } })
+      resolve(new Blob([glb], { type: 'model/gltf-binary' }))
+    }, reject, { binary: true })
+  })
+}
+
+export function downloadBlob(blob, name) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000)
 }

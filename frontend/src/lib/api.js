@@ -40,6 +40,23 @@ export const api = {
   undoFix(id) {
     return request(`/api/plans/${id}/fixes/undo`, { method: 'POST' })
   },
+  redo(id) {
+    return request(`/api/plans/${id}/fixes/redo`, { method: 'POST' })
+  },
+  edit(id, op) {
+    return request(`/api/plans/${id}/edit`, json(op))
+  },
+  editPreview(id, op) {
+    return request(`/api/plans/${id}/edit`, json({ ...op, dry_run: true }))
+  },
+  saveProject(id) {
+    return request(`/api/plans/${id}/project`)
+  },
+  openProject(file) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request('/api/projects', { method: 'POST', body: fd })
+  },
   editWall(id, wall, end, x, y, dryRun = false) {
     return request(`/api/plans/${id}/edits`, json({ wall, end, x, y, dry_run: dryRun }))
   },

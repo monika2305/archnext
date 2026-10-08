@@ -44,6 +44,17 @@ body {
   background-size: 24px 24px;
 }
 
+/* Synchronized View: floating room card in the 3D model */
+.glow-card {
+  padding: 6px 10px; border-radius: 10px; white-space: nowrap; text-align: center;
+  background: rgba(17, 24, 39, 0.82); backdrop-filter: blur(4px);
+  border: 1px solid rgba(139, 92, 246, 0.7);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.25), 0 0 18px rgba(139, 92, 246, 0.45), 0 0 32px rgba(16, 185, 129, 0.25);
+  animation: fade-in 0.3s ease-out;
+}
+@keyframes glow-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.55 } }
+.glow-pulse { animation: glow-pulse 2.2s ease-in-out infinite; }
+
 @keyframes pulse-ring { 0% { opacity: 0.9 } 50% { opacity: 0.25 } 100% { opacity: 0.9 } }
 .pulse { animation: pulse-ring 1.4s ease-in-out infinite; }
 @keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }

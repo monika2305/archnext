@@ -177,3 +177,16 @@ def test_edit_redo_and_project_api():
     re = client.post("/api/projects", files={"file": ("p.archnext.json", json.dumps(proj), "application/json")})
     assert re.status_code == 200 and re.json()["geometry"]["corrected"]["stats"]["rooms"] == 1
     assert client.post("/api/projects", files={"file": ("x.json", "{}", "application/json")}).status_code == 400
+
+
+def test_a_corner_opening_does_not_make_two_walls_move_together(sess):
+    # A door right at a corner is hosted by a horizontal and a vertical wall: moving one must not drag the other.
+    bottom = wall_near(sess, "h", y=743)
+    corner = {"id": "oc", "type": "door", "confidence": "high", "source": "parser",
+              "hosts": [bottom.id, wall_near(sess, "v", x=1043).id], "x1": 0, "y1": 0, "x2": 0, "y2": 0,
+              "width": 0, "thickness": 14}
+    sess.corrected.openings.append(corner)
+    assert editor._chain(sess, bottom.id) == [bottom.id]
+    sess.corrected.openings.remove(corner)
+    out = editor.apply_edit(sess, {"op": "move_wall", "wall": bottom.id, "dx": 0, "dy": 40})
+    assert out["ok"], out["reason"]

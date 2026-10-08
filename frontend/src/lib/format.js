@@ -40,7 +40,7 @@ export function issueTitle(i) {
     case 'micro_gaps': return 'Broken wall line'
     case 'fragments': return 'Stray fragment'
     case 'overshoots': return 'Wall overshoot'
-    case 'manual': return 'Wall end moved'
+    case 'manual': return m.replace(/ by hand$/, '') || 'Edited by hand'
     default: return 'Check this spot'
   }
 }

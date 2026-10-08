@@ -1,9 +1,10 @@
-import { Box, FileUp, Layers, Plus, ShieldCheck } from 'lucide-react'
+import { Box, FileUp, Layers, PencilRuler, Plus, ShieldCheck } from 'lucide-react'
 
 const TABS = [
   { key: 'upload', label: 'Upload', icon: FileUp },
   { key: 'analysis', label: 'Analysis', icon: Layers },
   { key: 'studio', label: '3D Studio', icon: Box },
+  { key: 'fix2build', label: 'Fix2Build', icon: PencilRuler },
   { key: 'validation', label: 'Validation', icon: ShieldCheck },
 ]
 
@@ -18,7 +19,7 @@ function ConfigDot({ on, label }) {
 
 export default function Header({ view, onView, hasResult, config, onNew }) {
   return (
-    <header className="h-14 shrink-0 bg-white/90 backdrop-blur border-b border-line flex items-center px-5 gap-6">
+    <header className="h-14 shrink-0 bg-white/90 backdrop-blur border-b border-line flex items-center px-3 lg:px-5 gap-3 lg:gap-6">
       <div className="flex items-center gap-2.5 xl:min-w-[230px] shrink-0">
         <svg viewBox="0 0 32 32" className="w-7 h-7" aria-hidden>
           <rect width="32" height="32" rx="7" fill="#3F6A8F" />
@@ -35,12 +36,12 @@ export default function Header({ view, onView, hasResult, config, onNew }) {
           const disabled = key !== 'upload' && !hasResult
           const active = view === key
           return (
-            <button key={key} disabled={disabled} onClick={() => onView(key)}
+            <button key={key} disabled={disabled} onClick={() => onView(key)} title={label}
               className={`h-9 px-3 rounded-lg flex items-center gap-2 whitespace-nowrap text-[13px] font-medium transition-colors
                 ${active ? 'bg-accent-soft text-accent-dark' : 'text-ink-soft hover:bg-paper'}
                 disabled:opacity-35 disabled:hover:bg-transparent disabled:cursor-not-allowed`}>
               <Icon size={15} strokeWidth={1.8} />
-              {label}
+              <span className="hidden lg:inline">{label}</span>
             </button>
           )
         })}
@@ -56,7 +57,7 @@ export default function Header({ view, onView, hasResult, config, onNew }) {
           </button>
         )}
         {hasResult && (
-          <button className="btn-secondary btn-sm" onClick={onNew}><Plus size={14} />New plan</button>
+          <button className="btn-secondary btn-sm" onClick={onNew} title="New plan"><Plus size={14} /><span className="hidden lg:inline">New plan</span></button>
         )}
       </div>
     </header>

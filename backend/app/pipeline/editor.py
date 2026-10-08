@@ -67,16 +67,21 @@ def _covers_opening(sess, w: Wall, old: Wall | None = None) -> dict | None:
 
 
 def _chain(sess, wid: str) -> list[str]:
-    """A wall and the collinear pieces it forms one wall with (linked by openings in between)."""
+    """A wall and the collinear pieces it forms one wall with (linked by openings in between). Openings at a
+    corner (between perpendicular walls) do not link: those walls are separate walls."""
+    by_id = {w.id: w for w in sess.corrected.walls}
     out, todo = {wid}, [wid]
     while todo:
         cur = todo.pop()
         for o in sess.corrected.openings:
-            if cur in o["hosts"]:
-                for h in o["hosts"]:
-                    if h not in out:
-                        out.add(h)
-                        todo.append(h)
+            if cur not in o["hosts"] or len(o["hosts"]) != 2:
+                continue
+            other = o["hosts"][1] if o["hosts"][0] == cur else o["hosts"][0]
+            a, b = by_id.get(cur), by_id.get(other)
+            if other in out or a is None or b is None or rn.host_gap(a, b) is None:
+                continue
+            out.add(other)
+            todo.append(other)
     return sorted(out)
 
 
@@ -133,9 +138,9 @@ def _move_wall(sess, walls, op):
     new = [v.copy() for v in walls]
     by_id = {v.id: v for v in new}
     moved = [by_id[c] for c in chain if c in by_id]
-    if moved[0].orient == "h":
+    if by_id[op["wall"]].orient == "h":
         dx = 0.0          # a straight wall moves sideways; along its own axis nothing changes
-    elif moved[0].orient == "v":
+    elif by_id[op["wall"]].orient == "v":
         dy = 0.0
     if abs(dx) < 0.5 and abs(dy) < 0.5:
         raise EditError("The wall did not move.")

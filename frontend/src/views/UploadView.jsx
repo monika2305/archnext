@@ -23,7 +23,8 @@ export default function UploadView({ file, preview, status, error, result, onFil
 
   const pick = (f) => {
     if (!f) return
-    if (!ACCEPT.includes(f.type)) return setLocalError('Use a PNG, JPG or WebP image.')
+    const project = f.name.toLowerCase().endsWith('.json')
+    if (!project && !ACCEPT.includes(f.type)) return setLocalError('Use a PNG, JPG or WebP image, or an .archnext.json project.')
     if (f.size > 25 * 1024 * 1024) return setLocalError('Max file size is 25 MB.')
     setLocalError('')
     onFile(f)
@@ -34,7 +35,7 @@ export default function UploadView({ file, preview, status, error, result, onFil
     onDrop: (e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files?.[0]) },
   }
   const fileInput = (
-    <input ref={input} type="file" accept=".png,.jpg,.jpeg,.webp" className="hidden"
+    <input ref={input} type="file" accept=".png,.jpg,.jpeg,.webp,.json" className="hidden"
            onChange={(e) => { pick(e.target.files?.[0]); e.target.value = '' }} />
   )
 
@@ -52,7 +53,7 @@ export default function UploadView({ file, preview, status, error, result, onFil
                 <Upload size={26} strokeWidth={1.8} />
               </div>
               <div className="text-[16px] font-medium">Drop your floor plan here</div>
-              <div className="text-[13px] text-ink-mute mt-1">or <span className="text-accent font-medium">browse</span> · PNG, JPG, WebP</div>
+              <div className="text-[13px] text-ink-mute mt-1">or <span className="text-accent font-medium">browse</span> · PNG, JPG, WebP · or a saved .archnext.json project</div>
             </div>
           </div>
           {fileInput}
@@ -66,7 +67,11 @@ export default function UploadView({ file, preview, status, error, result, onFil
   return (
     <div className="h-full p-6 flex flex-col items-center gap-5 min-h-0" {...dropProps}>
       <div className={`card relative flex-1 min-h-0 w-full max-w-5xl overflow-hidden blueprint-bg ${drag ? 'ring-2 ring-accent' : ''}`}>
-        <img src={preview} alt="Uploaded floor plan" className="absolute inset-0 m-auto max-w-[calc(100%-48px)] max-h-[calc(100%-48px)] object-contain bg-white shadow-card rounded" />
+        {file.name.toLowerCase().endsWith('.json')
+          ? <div className="absolute inset-0 grid place-items-center text-center"><div className="glass rounded-2xl px-6 py-5">
+              <div className="text-[14px] font-medium">Saved ArchNext project</div>
+              <div className="text-[12.5px] text-ink-mute mt-1">Your edited building will reopen exactly as saved.</div></div></div>
+          : <img src={preview} alt="Uploaded floor plan" className="absolute inset-0 m-auto max-w-[calc(100%-48px)] max-h-[calc(100%-48px)] object-contain bg-white shadow-card rounded" />}
         <div className="absolute top-3 left-3 right-3 flex items-center gap-2">
           <span className="glass rounded-lg px-2.5 h-8 flex items-center text-[12.5px] font-medium max-w-[50%] truncate" title={file.name}>{file.name}</span>
           {!processing && (
@@ -94,7 +99,7 @@ export default function UploadView({ file, preview, status, error, result, onFil
         ) : (
           <button className="btn-primary btn-lg min-w-[220px]" onClick={onGenerate} disabled={processing}>
             {processing ? <><Loader2 size={16} className="animate-spin" />Generating…</>
-              : status === 'error' ? <><RefreshCw size={16} />Try again</> : <>Generate 3D <ArrowRight size={16} /></>}
+              : status === 'error' ? <><RefreshCw size={16} />Try again</> : file.name.toLowerCase().endsWith('.json') ? <>Open project <ArrowRight size={16} /></> : <>Generate 3D <ArrowRight size={16} /></>}
           </button>
         )}
         {status === 'error' && <p className="text-[12.5px] text-bad flex items-center gap-1.5"><AlertTriangle size={14} />{error}</p>}
