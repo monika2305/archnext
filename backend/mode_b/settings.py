@@ -35,7 +35,7 @@ def worker_python() -> str:
 @dataclass
 class ProcessingSettings:
     """User-adjustable processing settings (validated ranges in ``clean``)."""
-    sample_fps: float = 4.0           # frames decoded per second of video before selection
+    sample_fps: float = 6.0           # frames decoded per second (6: enough overlap for fast hand-held turns)
     max_keyframes: int = 150          # upper bound on frames given to Structure-from-Motion
     min_motion: float = 0.025         # median feature motion (fraction of image diagonal) between keyframes
     blur_ratio: float = 0.45          # a frame is blurry below this fraction of the video's median sharpness

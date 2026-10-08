@@ -83,6 +83,12 @@ def recommend(lay: Layout, surfaces: list[dict], top: int = 3) -> dict:
     X, N, W, A = np.array(X), np.array(N, float), np.array(W), np.array(A)
     total_w = float(W.sum())
 
+    # Layout precision: is a precise position meaningful? If not, only viewing directions from the centre of the
+    # recorded camera path are evaluated (the user knows where that is; the room boundary is inferred).
+    measured_walls = sum(1 for p in lay.planes.values() if p.kind == "wall" and p.evidence)
+    gen_share = sum(c["area"] for s in surfaces for c in s["cells"] if c["cls"] == "generated") / max(total_area, 1e-9)
+    precise = bool(measured_walls >= 3 and gen_share <= 0.5)
+
     # Candidate positions: a grid inside the room at the recorded camera height, away from walls and obstacles.
     (x0, x1), (y0, y1), (z0, z1) = box["x"], box["y"], box["z"]
     margin = max(0.12 * min(x1 - x0, z1 - z0), 2 * lay.tau)
@@ -99,6 +105,9 @@ def recommend(lay: Layout, surfaces: list[dict], top: int = 3) -> dict:
                 rejected["obstacle"] += 1
                 continue
             positions.append([x, cam_h, z])
+    if not precise:
+        path_c = S.centers.mean(axis=0)
+        positions = [[path_c[0], cam_h, path_c[2]]]
     if not positions:
         return {"mode": "unavailable", "reason": "No free position inside the room could be found for a new view.",
                 "recommendations": [], "rejected": rejected}
@@ -116,11 +125,6 @@ def recommend(lay: Layout, surfaces: list[dict], top: int = 3) -> dict:
         vis = visibility_from(C, R, f, w, h, X[sel], n, near=0.02 * lay.scale_ref)
         vis_all[:, sel] = vis
     gains = vis_all.astype(float) @ W
-
-    # Layout precision: is a precise position meaningful?
-    measured_walls = sum(1 for p in lay.planes.values() if p.kind == "wall" and p.evidence)
-    gen_share = sum(c["area"] for s in surfaces for c in s["cells"] if c["cls"] == "generated") / max(total_area, 1e-9)
-    precise = measured_walls >= 3 and gen_share <= 0.5
 
     order = np.argsort(-gains)
     picks = []

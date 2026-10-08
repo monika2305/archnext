@@ -50,9 +50,18 @@ def path(pid: str) -> Path:
     return p
 
 
+def _plain(o):
+    """JSON fallback for NumPy scalars / arrays (without importing NumPy in the API process)."""
+    if hasattr(o, "item") and callable(o.item) and getattr(o, "ndim", 0) == 0:
+        return o.item()
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def write_json(p: Path, obj) -> None:
     tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8")
+    tmp.write_text(json.dumps(obj, indent=1, default=_plain), encoding="utf-8")
     for _ in range(20):                       # Windows: a reader may hold the file for a moment
         try:
             os.replace(tmp, p)

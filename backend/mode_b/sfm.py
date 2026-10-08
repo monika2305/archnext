@@ -19,6 +19,7 @@ import pycolmap
 from .errors import StageFailed
 
 CFG = pycolmap.TwoViewGeometryConfiguration
+SEED = 0
 
 
 @dataclass
@@ -89,6 +90,26 @@ def _pair_stats(db_path: Path) -> dict:
             "mean_keypoints": float(np.mean(kp)) if kp else 0.0, "min_keypoints": int(min(kp)) if kp else 0}
 
 
+MAX_MEDIAN_ROLL_DEG = 12.0
+
+
+def roll_consistency(rotations: np.ndarray) -> float:
+    """Median camera roll (degrees) about the common "up" implied by the cameras' x axes.
+
+    Hand-held cameras barely roll, so in a correct reconstruction all camera x axes are perpendicular to one
+    direction (median roll 2-4 deg on TUM). A distorted model (bad initialisation under fast motion / blur) has no
+    such direction (20+ deg measured on the distorted TUM fr1/room reconstructions). No ground truth needed."""
+    X = rotations[:, 0, :]
+    if len(X) < 3:
+        return float("nan")
+    _, V = np.linalg.eigh(X.T @ X)
+    return float(np.median(np.degrees(np.arcsin(np.clip(np.abs(X @ V[:, 0]), 0, 1)))))
+
+
+def _model_roll(r) -> float:
+    return roll_consistency(np.array([r.image(i).cam_from_world().rotation.matrix() for i in r.reg_image_ids()]))
+
+
 def _diagnose(stats: dict, n_images: int, registered: int) -> str:
     """User-facing explanation of why poses could not be estimated, from the measured statistics."""
     if stats["mean_keypoints"] < 150:
@@ -131,37 +152,60 @@ def make_pairs(names: list[str], window: int = 30, cross_stride: int = 2, loop_s
 
 
 def run(image_dir: Path, names: list[str], work: Path, progress=lambda f, m: None, max_features: int = 4096,
-        min_registered: int = 6) -> SfmResult:
-    """Run SfM on ``names`` (in ``image_dir``); keep the largest model. Raises StageFailed with a reason."""
+        min_registered: int = 6, existing: Path | None = None) -> SfmResult:
+    """Run SfM on ``names`` (in ``image_dir``); keep the largest pose-consistent model (written to work/best,
+    next to work/database.db). Raises StageFailed with a reason.
+
+    ``existing`` = the work folder of the previous version (database.db + best): additional footage is then added
+    the way COLMAP registers new images: only the new frames get features and matches (against each other and
+    against the earlier frames), and mapping continues from the existing reconstruction, so frames that were
+    already registered stay registered."""
     t0 = time.time()
     if work.exists():
         shutil.rmtree(work)
     (work / "model").mkdir(parents=True)
     db = work / "database.db"
+    new_names = names
+    if existing is not None:
+        shutil.copy(existing / "database.db", db)
+        dbh = pycolmap.Database.open(str(db))
+        try:
+            old = {im.name for im in dbh.read_all_images()}
+        finally:
+            dbh.close()
+        new_names = [n for n in names if n not in old]
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = "SIMPLE_RADIAL"
     ext = pycolmap.FeatureExtractionOptions()
     ext.use_gpu = False
     ext.num_threads = -1
     ext.sift.max_num_features = max_features
-    progress(0.05, f"Extracting SIFT features from {len(names)} frames")
-    pycolmap.extract_features(db, image_dir, image_names=names, camera_mode=pycolmap.CameraMode.SINGLE,
+    progress(0.05, f"Extracting SIFT features from {len(new_names)} frames")
+    # One camera per video (a second recording may come from another device or zoom).
+    pycolmap.extract_features(db, image_dir, image_names=new_names,
+                              camera_mode=pycolmap.CameraMode.PER_FOLDER if existing is not None else pycolmap.CameraMode.SINGLE,
                               reader_options=reader, extraction_options=ext, device=pycolmap.Device.cpu)
     match = pycolmap.FeatureMatchingOptions()
     match.use_gpu = False
     match.num_threads = -1
+    verify = pycolmap.TwoViewGeometryOptions()
+    verify.ransac.random_seed = SEED                  # fixed seeds: the same video gives the same reconstruction
     videos = len({n.split("/")[0] for n in names})
-    if len(names) <= 150 and videos == 1:
+    if existing is None and len(names) <= 150 and videos == 1:
         progress(0.25, f"Matching all {len(names) * (len(names) - 1) // 2} frame pairs")
-        pycolmap.match_exhaustive(db, matching_options=match, device=pycolmap.Device.cpu)
+        pycolmap.match_exhaustive(db, matching_options=match, verification_options=verify, device=pycolmap.Device.cpu)
     else:
-        pairs = make_pairs(names)
+        pairs = make_pairs(names, cross_stride=1 if existing is not None else 2)
+        if existing is not None:
+            fresh = set(new_names)
+            pairs = [p for p in pairs if p[0] in fresh or p[1] in fresh]
         (work / "pairs.txt").write_text("".join(f"{a} {b}\n" for a, b in pairs))
         pairing = pycolmap.ImportedPairingOptions()
         pairing.match_list_path = str(work / "pairs.txt")
         progress(0.25, f"Matching {len(pairs)} frame pairs (neighbours, loop closures"
                        + (", and new footage against the earlier video)" if videos > 1 else ")"))
-        pycolmap.match_image_pairs(db, matching_options=match, pairing_options=pairing, device=pycolmap.Device.cpu)
+        pycolmap.match_image_pairs(db, matching_options=match, pairing_options=pairing, verification_options=verify,
+                                   device=pycolmap.Device.cpu)
     stats = _pair_stats(db)
     progress(0.45, f"{stats['verified_pairs']} geometrically verified frame pairs; estimating camera poses")
 
@@ -170,20 +214,47 @@ def run(image_dir: Path, names: list[str], work: Path, progress=lambda f, m: Non
     opts.min_model_size = 3
     opts.multiple_models = True
     opts.ba_use_gpu = False
+    opts.random_seed = SEED
+    opts.mapper.random_seed = SEED
     # Hand-held room videos turn quickly and blur: accept smaller (still RANSAC-verified) 2D-3D inlier sets when
     # registering a frame. On TUM fr1/room this registers 111 instead of 87 of 148 keyframes.
     opts.mapper.abs_pose_min_num_inliers = 15
     opts.mapper.abs_pose_min_inlier_ratio = 0.15
-    try:
-        models = pycolmap.incremental_mapping(db, image_dir, work / "model", options=opts)
-    except Exception as exc:  # noqa: BLE001
-        raise StageFailed(f"Structure-from-Motion failed: {exc}. " + _diagnose(stats, len(names), 0)) from exc
-    best = max(models.values(), key=lambda r: r.num_reg_images(), default=None)
+    # Mapping is cheap compared with matching: until a pose-consistent model covers at least half of the frames,
+    # retry with other seeds on the same matches (up to 5 initialisations) and keep the largest consistent model.
+    attempts, best, best_roll, best_key, models = [], None, float("nan"), None, {}
+    for seed in range(SEED, SEED + 5):
+        opts.random_seed = opts.mapper.random_seed = seed
+        out = work / "model" / f"seed{seed}"
+        out.mkdir(parents=True, exist_ok=True)
+        try:
+            models = pycolmap.incremental_mapping(db, image_dir, out, options=opts,
+                                                  input_path=str(existing / "best") if existing is not None else "")
+        except Exception as exc:  # noqa: BLE001
+            attempts.append({"seed": seed, "error": str(exc)})
+            continue
+        scored = sorted(((r.num_reg_images(), _model_roll(r), r) for r in models.values()), key=lambda t: -t[0])
+        attempts.append({"seed": seed, "models": [{"frames": n, "median_roll_deg": round(rl, 1)} for n, rl, _ in scored]})
+        for n, rl, r in scored:                       # rank: consistent first, then most registered frames
+            key = (rl <= MAX_MEDIAN_ROLL_DEG, n)
+            if best is None or key > best_key:
+                best, best_roll, best_key = r, rl, key
+        if best is not None and best_roll <= MAX_MEDIAN_ROLL_DEG and best.num_reg_images() >= 0.5 * len(names):
+            break
+        progress(0.6, "Camera poses look inconsistent; retrying the reconstruction with another initialisation")
+    if not attempts or all("error" in a for a in attempts):
+        raise StageFailed(f"Structure-from-Motion failed: {attempts[-1].get('error') if attempts else ''}. "
+                          + _diagnose(stats, len(names), 0))
     registered = best.num_reg_images() if best is not None else 0
     diag = {"input_frames": len(names), "registered_frames": registered,
-            "registered_ratio": registered / max(1, len(names)), "models": len(models), **stats}
+            "registered_ratio": registered / max(1, len(names)), "models": len(models), **stats,
+            "median_roll_deg": round(best_roll, 2) if best is not None else None,
+            "pose_consistent": bool(best is not None and best_roll <= MAX_MEDIAN_ROLL_DEG), "mapping_attempts": attempts}
     if best is None or registered < min_registered or registered < 0.3 * len(names):
         raise StageFailed(_diagnose(stats, len(names), registered))
+    (work / "best").mkdir(exist_ok=True)
+    best.write(str(work / "best"))
+    shutil.rmtree(work / "model", ignore_errors=True)      # other attempts / models are not needed any more
     progress(0.9, f"{registered} of {len(names)} frames registered")
 
     img_ids = sorted(best.reg_image_ids(), key=lambda i: best.image(i).name)
@@ -220,6 +291,9 @@ def run(image_dir: Path, names: list[str], work: Path, progress=lambda f, m: Non
         warnings.append(f"{len(names) - registered} frames could not be placed; parts of the room they show are missing.")
     if diag["reprojection_error_px"] and diag["reprojection_error_px"] > 1.5:
         warnings.append("High reprojection error: camera poses are less precise than usual.")
+    if not diag["pose_consistent"]:
+        warnings.append(f"Camera orientations are inconsistent (median roll {best_roll:.0f} deg): the reconstruction is "
+                        "probably distorted by fast motion or blur, so no room shell is built from it.")
     if diag["models"] > 1:
         warnings.append(f"The video split into {diag['models']} disconnected reconstructions; the largest one is used.")
     diag["warnings"] = warnings

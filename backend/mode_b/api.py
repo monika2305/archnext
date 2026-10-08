@@ -196,6 +196,17 @@ def export_glb(pid: str, version: int | None = None, include: str = "all"):
                     headers={"Content-Disposition": f'attachment; filename="{fname}-modeb-v{s["version"]}.glb"'})
 
 
+@router.get("/research/scenes/{name}")
+def research_scene(name: str):
+    """Reduced reconstruction (surfaces, cameras) of one ablation configuration, for side-by-side 3D."""
+    if not re.fullmatch(r"[a-z0-9_]{3,80}_[ABCD]\.json", name):
+        raise HTTPException(404, "Unknown result scene.")
+    f = RESULTS / "scenes" / name
+    if not f.is_file():
+        raise HTTPException(404, "Unknown result scene.")
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
 @router.get("/research")
 def research():
     """Saved A/B/C/D ablation results (backend/mode_b/results), produced by mode_b.evaluation.run_ablation."""

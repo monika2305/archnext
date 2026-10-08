@@ -119,6 +119,75 @@ def manhattan_yaw(P: np.ndarray, up: np.ndarray) -> tuple[float | None, float]:
     return yaw, len(sel) / max(1, vertical.sum())
 
 
+def line_yaw(sfm: SfmResult, up: np.ndarray, e1: np.ndarray, load_gray, max_frames: int = 40) -> tuple[float | None, float, int]:
+    """Wall azimuth from image line segments (vanishing directions), the standard indoor Manhattan cue.
+
+    Each LSD segment and the camera centre span an interpretation plane with normal n (world frame, from the
+    estimated pose). A horizontal 3D line lies in that plane and is perpendicular to "up", so its direction is
+    n x up. Segments whose plane (nearly) contains "up" may be vertical lines and are skipped. Length-weighted
+    azimuths folded to [0, 90) peak at the room's wall directions. Returns (yaw, peak / median, segments)."""
+    import cv2
+    p = sfm.intrinsics["params"]
+    f, cx, cy = p[0], p[1], p[2]
+    Kinv = np.linalg.inv(np.array([[f, 0, cx], [0, f, cy], [0, 0, 1.0]]))
+    e2 = np.cross(up, e1)
+    lsd = cv2.createLineSegmentDetector()
+    az, wt = [], []
+    step = max(1, len(sfm.names) // max_frames)
+    for k in range(0, len(sfm.names), step):
+        g = load_gray(sfm.names[k])
+        if g is None:
+            continue
+        segs = lsd.detect(g)[0]
+        if segs is None:
+            continue
+        segs = segs.reshape(-1, 4)
+        L = np.hypot(segs[:, 2] - segs[:, 0], segs[:, 3] - segs[:, 1])
+        keep = L > 0.04 * np.hypot(*g.shape)
+        segs, L = segs[keep], L[keep]
+        if not len(segs):
+            continue
+        r1 = np.c_[segs[:, :2], np.ones(len(segs))] @ Kinv.T
+        r2 = np.c_[segs[:, 2:], np.ones(len(segs))] @ Kinv.T
+        n = np.cross(r1, r2)
+        n /= np.linalg.norm(n, axis=1, keepdims=True)
+        nw = n @ sfm.rotations[k]                        # camera -> world (R^T n)
+        ok = np.abs(nw @ up) > 0.15
+        d = np.cross(nw[ok], up)
+        d /= np.linalg.norm(d, axis=1, keepdims=True)
+        az.append(np.degrees(np.arctan2(d @ e2, d @ e1)) % 90)
+        wt.append(L[ok])
+    if not az or sum(len(a) for a in az) < 30:
+        return None, 0.0, 0
+    az, wt = np.concatenate(az), np.concatenate(wt)
+    h = np.histogram(az, bins=180, range=(0, 90), weights=wt)[0]
+    sm = np.convolve(np.r_[h[-4:], h, h[:4]], np.ones(9) / 9, mode="same")[4:-4]
+    k = int(np.argmax(sm))
+    sel = az[np.abs(((az - (k + 0.5) / 2) + 45) % 90 - 45) < 2]
+    w = wt[np.abs(((az - (k + 0.5) / 2) + 45) % 90 - 45) < 2]
+    yaw = float(np.degrees(np.arctan2((np.sin(np.radians(sel * 4)) * w).sum(), (np.cos(np.radians(sel * 4)) * w).sum())) / 4) % 90
+    return yaw, float(sm[k] / max(np.median(sm), 1e-9)), int(len(az))
+
+
+def histogram_yaw(P: np.ndarray, up: np.ndarray, e1: np.ndarray, bin_w: float) -> tuple[float, float]:
+    """Wall azimuth (degrees in [0, 90)) that makes the points' horizontal coordinates most "Manhattan": walls,
+    desk edges and shelves aligned with the room axes pile up in few histogram bins along x and z. Returns the
+    best angle and its sharpness relative to the median angle (1 = no preferred direction)."""
+    e2 = np.cross(up, e1)
+    a, b = P @ e1, P @ e2
+    scores = []
+    angles = np.arange(0, 90, 0.5)
+    for deg in angles:
+        c, s = np.cos(np.radians(deg)), np.sin(np.radians(deg))
+        x, z = c * a + s * b, -s * a + c * b
+        hx = np.bincount(((x - x.min()) / bin_w).astype(int))
+        hz = np.bincount(((z - z.min()) / bin_w).astype(int))
+        scores.append(float((hx.astype(float) ** 2).sum() + (hz.astype(float) ** 2).sum()))
+    scores = np.array(scores)
+    k = int(np.argmax(scores))
+    return float(angles[k]), float(scores[k] / max(np.median(scores), 1e-9))
+
+
 def _peaks(v: np.ndarray, bin_w: float, min_support: int) -> list[tuple[float, int]]:
     """Point layers along one axis: (position, support) of histogram peaks, refined to the mean of inliers."""
     if len(v) == 0:
@@ -146,7 +215,7 @@ def _layer(P: np.ndarray, axis: int, pos: float, tol: float, other: tuple[int, i
 
 
 def _pick_layer(P: np.ndarray, sel: np.ndarray, axis: int, sign: int, tol: float, n_min: int, other, min_ext,
-                rel: float) -> float | None:
+                rel: float, max_beyond: float | None = None) -> float | None:
     """The outermost (``sign``) layer along ``axis`` among points ``sel`` that is a genuine extended surface:
     support >= max(n_min, rel x the strongest layer) and extent >= ``min_ext`` along both other axes.
     Extent, not density, separates a wall or floor from a cluttered desk top or shelf."""
@@ -160,6 +229,10 @@ def _pick_layer(P: np.ndarray, sel: np.ndarray, axis: int, sign: int, tol: float
             continue
         n, e1, e2 = _layer(P[sel], axis, sign * c, tol, other)
         if e1 >= min_ext[0] and e2 >= min_ext[1]:
+            # A floor has nothing below it (a ceiling nothing above): a desk top with drawers, chairs and floor
+            # points beneath it is not the floor.
+            if max_beyond is not None and np.sum(sign * P[:, axis] > c + 3 * tol) > max(10, max_beyond * len(P)):
+                continue
             return sign * c
     return None
 
@@ -176,10 +249,18 @@ def _evidence(P: np.ndarray, axis: int, offset: float, tol: float, tracks_of, ot
             "spread": [round(s, 4) for s in spread], "views": len(views)}
 
 
-def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None) -> Layout:
+def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None, load_gray=None) -> Layout:
     """Room layout. ``frame`` = (R, t) of an earlier version: reuse its axes and origin (no re-centring), so an
     updated reconstruction is directly comparable with the previous one."""
     keep = clean_points(sfm)
+    from .sfm import MAX_MEDIAN_ROLL_DEG, roll_consistency
+    roll = roll_consistency(sfm.rotations)
+    if frame is None and roll > MAX_MEDIAN_ROLL_DEG:
+        lay = Layout(np.eye(3), np.zeros(3), sfm, keep, 0.0, 0.0)
+        lay.failure = (f"The camera orientations are inconsistent (median roll {roll:.0f} degrees; hand-held video is "
+                       "normally below 5): the reconstruction is probably distorted by fast motion or blur, so no room "
+                       "layout is estimated from it. Record the room more slowly.")
+        return lay
     if keep.sum() < 50:
         lay = Layout(np.eye(3), np.zeros(3), sfm, keep, 0.0, 0.0)
         lay.failure = (f"Only {int(keep.sum())} reliable 3D points were reconstructed: not enough evidence to "
@@ -187,8 +268,24 @@ def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None)
         return lay
     up, up_src = up_direction(sfm)
     P0 = sfm.points[keep]
-    yaw, agree = manhattan_yaw(P0, up) if frame is None else (0.0, 1.0)
     notes = [f"Up direction from {up_src}."] if frame is None else ["Axes and origin of the previous version kept."]
+    yaw, agree, how = None, 0.0, None
+    if frame is None:
+        e1h = np.cross(up, [1.0, 0, 0] if abs(up[0]) < 0.9 else [0, 0, 1.0])
+        e1h /= np.linalg.norm(e1h)
+        L0 = float(np.percentile(np.linalg.norm((P0 - sfm.centers.mean(0)) - np.outer((P0 - sfm.centers.mean(0)) @ up, up), axis=1), 90))
+        yaw_l, peak, nseg = line_yaw(sfm, up, e1h, load_gray) if load_gray else (None, 0.0, 0)
+        yaw_h, sharp = histogram_yaw(P0, up, e1h, 0.02 * L0)
+        if yaw_l is not None and peak > 2.5:
+            yaw, how = yaw_l, (f"Manhattan wall directions from {nseg} image line segments (vanishing directions; "
+                               f"peak {peak:.1f}x the median).")
+        elif sharp > 1.15:
+            yaw, how = yaw_h, f"Manhattan wall directions from the sharpest horizontal point histograms ({sharp:.2f}x the median angle)."
+        else:
+            yaw, agree = manhattan_yaw(P0, up)
+            how = None if yaw is None else f"Manhattan wall directions from {agree:.0%} of locally planar vertical point patches."
+    else:
+        yaw = 0.0
     if frame is not None:
         e1, up = frame[0][0], frame[0][1]
     elif yaw is None:
@@ -200,7 +297,7 @@ def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None)
     else:
         e1 = np.cross(up, [1.0, 0, 0] if abs(up[0]) < 0.9 else [0, 0, 1.0])
         e1 /= np.linalg.norm(e1)
-        notes.append(f"Manhattan wall directions from {agree:.0%} of locally planar vertical point patches.")
+        notes.append(how)
     e2 = np.cross(up, e1)
     c, s = np.cos(np.radians(yaw)), np.sin(np.radians(yaw))
     ex = c * e1 + s * e2
@@ -226,15 +323,15 @@ def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None)
     ymin, ymax = C[:, 1].min(), C[:, 1].max()
     below = P[:, 1] < ymin - 2 * tau
     above = P[:, 1] > ymax + 2 * tau
-    y_floor = _pick_layer(P, below & along[:, 1], 1, -1, tau, n_min, (0, 2), (0.15 * L, 0.15 * L), 0.05)
+    y_floor = _pick_layer(P, below & along[:, 1], 1, -1, tau, n_min, (0, 2), (0.15 * L, 0.15 * L), 0.05, 0.005)
     if y_floor is not None:
         ev = _evidence(P, 1, y_floor, tau, tracks_of, (0, 2))
         lay.planes["floor"] = Plane("floor", "floor", 1, -1, y_floor, ev)
     else:
-        y_floor = float(min(P[:, 1].min(), ymin - tau))
+        y_floor = float(min(np.percentile(P[:, 1], 0.5), ymin - tau))
         lay.planes["floor"] = Plane("floor", "floor", 1, -1, y_floor, None,
                                     "No floor layer found; the floor is placed at the lowest observed point (a bound).")
-    y_ceil = _pick_layer(P, above & along[:, 1], 1, 1, tau, n_min, (0, 2), (0.15 * L, 0.15 * L), 0.05)
+    y_ceil = _pick_layer(P, above & along[:, 1], 1, 1, tau, n_min, (0, 2), (0.15 * L, 0.15 * L), 0.05, 0.005)
     if y_ceil is not None:
         lay.planes["ceiling"] = Plane("ceiling", "ceiling", 1, 1, y_ceil, _evidence(P, 1, y_ceil, tau, tracks_of, (0, 2)))
 
@@ -244,7 +341,9 @@ def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None)
         for sign in (1, -1):
             pid = f"wall-{'xyz'[axis]}{'+' if sign > 0 else '-'}"
             v = sign * P[:, axis]
-            c_ext = (sign * C[:, axis]).max()
+            # Robust camera extent: a wall lies beyond (almost) the whole camera path; one frame taken close to a
+            # wall (filming a desk against it) must not push the search past the wall itself.
+            c_ext = float(np.percentile(sign * C[:, axis], 95))
             cand = span & (v > c_ext + tau) & along[:, axis]
             height = (lay.planes["ceiling"].offset if "ceiling" in lay.planes else C[:, 1].max()) - y_floor
             found = _pick_layer(P, cand, axis, sign, tau, n_min, (2 - axis, 1), (0.15 * L, 0.2 * height), 0.1)
@@ -270,8 +369,10 @@ def estimate(sfm: SfmResult, frame: tuple[np.ndarray, np.ndarray] | None = None)
     walls_ok = [p for p in lay.planes.values() if p.kind == "wall" and p.evidence]
     axes_ok = {p.axis for p in walls_ok}
     floor_ok = lay.planes["floor"].evidence is not None
-    lay.reliable = (len(walls_ok) >= 3) or (len(walls_ok) >= 2 and len(axes_ok) == 2 and floor_ok) or \
-                   (len(walls_ok) >= 2 and floor_ok and len(axes_ok) == 1)
+    # Reliable: a measured corner (two perpendicular walls), two parallel walls with the floor, or three walls.
+    # Every other face is then either measured or placed at an observed bound (and labelled as such).
+    lay.reliable = (len(walls_ok) >= 3) or (len(walls_ok) >= 2 and len(axes_ok) == 2) or \
+                   (len(walls_ok) >= 2 and floor_ok)
     if not lay.reliable:
         lay.failure = (f"Only {len(walls_ok)} wall(s){' and the floor' if floor_ok else ''} have point evidence: the room "
                        "layout cannot be estimated reliably. The observed points are shown, but no room shell is "

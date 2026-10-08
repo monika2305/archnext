@@ -7,8 +7,10 @@ extend:  additional video -> keyframes -> joint SfM of all keyframes, aligned (S
 from __future__ import annotations
 
 import json
+import shutil
 import time
 
+import cv2
 import numpy as np
 
 from . import layout as layout_mod
@@ -94,12 +96,20 @@ def _reconstruct(status, pid: str, names: list[str], prev: dict | None, settings
     version = (max((v["version"] for v in proj["versions"]), default=0)) + 1
     vdir = projects.version_dir(pid, version)
     with status.stage("sfm") as st:
-        res = sfm_mod.run(d, names, d / "sfm", progress=st.progress)
+        work = d / ("sfm_next" if prev is not None else "sfm")
+        try:
+            res = sfm_mod.run(d, names, work, progress=st.progress,
+                              existing=(d / "sfm") if prev is not None and (d / "sfm" / "best").is_dir() else None)
+        except StageFailed:
+            if prev is not None:
+                shutil.rmtree(work, ignore_errors=True)       # the previous reconstruction stays as it was
+            raise
         alignment = None
         if prev is not None:
             old = sfm_mod.SfmResult.from_npz(prev["dir"] / "sfm_raw.npz")
             common = sorted(set(old.names) & set(res.names))
-            new_names = [n for n in names if n not in set(old.names)]
+            latest = names[-1].split("/")[0]                    # the folder of the video just added
+            new_names = [n for n in names if n.split("/")[0] == latest]
             new_reg = [n for n in res.names if n in set(new_names)]
             if len(common) < 5 or len(new_reg) < max(3, 0.3 * len(new_names)):
                 raise StageFailed(
@@ -132,7 +142,7 @@ def _reconstruct(status, pid: str, names: list[str], prev: dict | None, settings
     with status.stage("layout") as st:
         frame = (np.array(prev["scene"]["layout"]["frame"]["R"]), np.array(prev["scene"]["layout"]["frame"]["t"])) \
             if prev else None
-        lay = layout_mod.estimate(res, frame=frame)
+        lay = layout_mod.estimate(res, frame=frame, load_gray=lambda n: cv2.imread(str(d / n), cv2.IMREAD_GRAYSCALE))
         measured = [p.id for p in lay.planes.values() if p.evidence]
         if lay.tau == 0:
             raise StageFailed(lay.failure)
@@ -174,6 +184,11 @@ def _reconstruct(status, pid: str, names: list[str], prev: dict | None, settings
                                          "reliable": lay.reliable}})
     proj["current_version"] = version
     projects.save(pid, proj)
+    # The COLMAP database and chosen model of the latest version are kept so further footage can be registered
+    # into it; the previous ones are not needed any more.
+    if prev is not None and (d / "sfm_next").is_dir():
+        shutil.rmtree(d / "sfm", ignore_errors=True)
+        (d / "sfm_next").rename(d / "sfm")
     return (f"Version {version}: {diag['registered_frames']} frames registered"
             + ("" if lay.reliable else " (partial result: room layout not reliable)"))
 
@@ -189,4 +204,8 @@ def run(action: str, pid: str, args: list[str], status) -> str:
     if action == "extend":
         v = proj["current_version"]
         prev = {"version": v, "dir": projects.version_dir(pid, v), "scene": projects.scene(pid, v)}
-    return _reconstruct(status, pid, names, prev, settings)
+    try:
+        return _reconstruct(status, pid, names, prev, settings)
+    except Exception:
+        shutil.rmtree(projects.path(pid) / "sfm_next", ignore_errors=True)   # keep the previous version intact
+        raise

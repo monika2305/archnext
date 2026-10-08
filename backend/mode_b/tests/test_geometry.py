@@ -164,3 +164,70 @@ def test_scene_document_is_complete_and_honest(lay):
     assert sc["summary"]["shares"]["generated"] > 0 and abs(sum(sc["summary"]["shares"].values()) - 1) < 1e-3
     assert sc["layout"]["box"] and sc["cameras"] and len(sc["points"]["xyz"]) % 3 == 0
     assert sc["confidence_method"]["calibrated"] is False
+
+
+def render_lines(sfm, gt, name):
+    """SYNTHETIC image for camera ``name``: the room's horizontal and vertical edges drawn as lines."""
+    import cv2
+    k = sfm.names.index(name)
+    img = np.full((480, 640), 200, np.uint8)
+    (x0, x1), (y0, y1), (z0, z1) = BOX["x"], BOX["y"], BOX["z"]
+    segs = []
+    for y in np.linspace(y0, y1, 6):                                    # horizontal lines on all four walls
+        segs += [([x0, y, z0], [x1, y, z0]), ([x0, y, z1], [x1, y, z1]), ([x0, y, z0], [x0, y, z1]), ([x1, y, z0], [x1, y, z1])]
+    for x in np.linspace(x0, x1, 5):                                    # vertical lines
+        segs += [([x, y0, z0], [x, y1, z0])]
+    f, cx, cy = sfm.intrinsics["params"][:3]
+    for a, b in segs:
+        pts = []
+        for t in np.linspace(0, 1, 40):
+            Xr = np.array(a) * (1 - t) + np.array(b) * t
+            Xs = gt["s"] * (gt["G"] @ Xr) + gt["t"]                        # into the SfM gauge
+            Xc = sfm.rotations[k] @ (Xs - sfm.centers[k])
+            if Xc[2] > 0.05:
+                pts.append((f * Xc[0] / Xc[2] + cx, f * Xc[1] / Xc[2] + cy))
+        for p, q in zip(pts, pts[1:]):
+            if all(-2000 < v < 2000 for v in (*p, *q)):
+                cv2.line(img, (int(p[0]), int(p[1])), (int(q[0]), int(q[1])), 20, 2)
+    return img
+
+
+def test_wall_directions_from_image_lines_without_any_wall_points(synth):
+    sfm, gt = synth
+    # Keep only floor points: the point cloud alone cannot tell the wall directions any more.
+    on_floor = gt["labels"] == "floor"
+    floor_only = SfmResult(sfm.names, sfm.centers, sfm.rotations, sfm.intrinsics, sfm.image_errors, sfm.points[on_floor],
+                           sfm.colors[on_floor], sfm.errors[on_floor], [t for t, m in zip(sfm.tracks, on_floor) if m], {})
+    up, _ = layout.up_direction(floor_only)
+    e1 = np.cross(up, [1.0, 0, 0])
+    e1 /= np.linalg.norm(e1)
+    yaw, peak, nseg = layout.line_yaw(floor_only, up, e1, lambda n: render_lines(sfm, gt, n))
+    true_x = gt["G"] @ np.array([1.0, 0, 0])
+    true_az = np.degrees(np.arctan2(true_x @ np.cross(up, e1), true_x @ e1)) % 90
+    err = abs(((yaw - true_az) + 45) % 90 - 45)
+    assert nseg > 100 and peak > 2.5 and err < 1.5, (yaw, true_az, peak)
+
+
+def test_scene_documents_with_numpy_values_are_saved(tmp_path, lay):
+    from mode_b import projects
+    sc = scene_mod.assemble(1, lay, {"flag": np.bool_(True), "n": np.int64(3), "v": np.float32(0.5)}, {}, True, "t")
+    projects.write_json(tmp_path / "scene.json", sc)          # must not fail on NumPy scalars
+    back = projects.read_json(tmp_path / "scene.json")
+    assert back["diagnostics"] == {"flag": True, "n": 3, "v": 0.5} and isinstance(back["nbv"].get("precise", True), bool)
+
+
+def test_inconsistent_camera_orientations_block_the_room_layout(synth):
+    from mode_b.sfm import roll_consistency
+    sfm, _ = synth
+    assert roll_consistency(sfm.rotations) < 5                         # level hand-held cameras
+    rng = np.random.default_rng(2)
+    bad = sfm.rotations.copy()
+    for k in range(len(bad)):                                           # a distorted model: cameras rolled randomly
+        a = rng.uniform(-0.6, 0.6)
+        Rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+        bad[k] = Rz @ bad[k]
+    assert roll_consistency(bad) > 12
+    distorted = SfmResult(sfm.names, sfm.centers, bad, sfm.intrinsics, sfm.image_errors, sfm.points, sfm.colors,
+                          sfm.errors, sfm.tracks, {})
+    lay = layout.estimate(distorted)
+    assert lay.tau == 0 and "inconsistent" in lay.failure                # no room shell from a distorted model

@@ -47,7 +47,7 @@ export default function NextBestViewView({ data, scene, onExtend, busy }) {
                 <div className="label mb-1">Regions this view covers</div>
                 <ul className="text-[12.5px] space-y-1">
                   {cur.covers.slice(0, 5).map((c) => (
-                    <li key={c.surface} className="flex justify-between gap-2"><span className="capitalize">{c.name}</span>
+                    <li key={c.surface} className="flex justify-between gap-2"><span className="first-letter:uppercase">{c.name}</span>
                       <span className="text-ink-mute tabular-nums">{c.generated > 0 && <span style={{ color: TRUST_CLASSES.generated.color }}>{c.generated} generated </span>}
                         {c.uncertain > 0 && <span style={{ color: TRUST_CLASSES.uncertain.color }}>{c.uncertain} uncertain</span>}</span></li>))}
                 </ul>

@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { AlertTriangle, ArrowRight, ChevronDown, Film, Loader2, Settings2, Upload, X } from 'lucide-react'
 import { TRUST_CLASSES } from '../lib/trust.js'
 
-const DEFAULTS = { sample_fps: 4, max_keyframes: 90, min_motion: 0.025, blur_ratio: 0.45, completion: true }
+const DEFAULTS = { sample_fps: 6, max_keyframes: 150, min_motion: 0.025, blur_ratio: 0.45, completion: true }
 const FIELDS = [
   ['sample_fps', 'Frames sampled per second', 1, 10, 0.5],
   ['max_keyframes', 'Maximum keyframes', 12, 200, 1],

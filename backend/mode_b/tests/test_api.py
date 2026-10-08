@@ -43,7 +43,8 @@ def test_invalid_settings_are_rejected(tmp_video):
 
 def test_upload_runs_the_worker_and_reports_real_stages(tmp_video):
     data = tmp_video(n=120, step=6, fps=20).read_bytes()
-    r = client.post("/api/mode-b/projects", data={"name": "Synthetic pan"},
+    r = client.post("/api/mode-b/projects", data={"name": "Synthetic pan",
+                                                   "settings": '{"max_keyframes": 20, "sample_fps": 4}'},
                     files={"file": ("pan.mp4", data, "application/octet-stream")})
     assert r.status_code == 200, r.text
     pid = r.json()["project"]["id"]

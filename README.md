@@ -11,6 +11,9 @@ upload → preprocessing → wall / room / door / window detection → vectorisa
 
 All geometry comes from the uploaded image. There is no sample building and no hard-coded geometry.
 
+**Mode B — Room video → 3D** is a separate dashboard at `/mode-b` (e.g. http://localhost:5173/mode-b); see
+[Mode B](#mode-b--room-video--3d-separate-dashboard) below. It does not change anything in Mode A.
+
 ---
 
 ## Windows quick start
@@ -442,6 +445,29 @@ most recent plans are kept). Writes are atomic, so a crash never leaves a half-w
 **Review 2 demo.** Upload a plan → *Generate 3D* → *Fix2Build* → click a bedroom in 2D (it glows in 3D, the camera
 flies to it, the card shows name and area) → drag one of its walls (3D wall moves, area recalculates) → Ctrl+Z
 (geometry and area return) → click a room in 3D (the 2D room lights up) → *Add door* on a wall → *Export GLB*.
+
+## Mode B — Room video → 3D (separate dashboard)
+
+**VisionTrust — "Reconstruct what you see. Reveal what you assume."** Mode B reconstructs a room from a short
+walkthrough video and marks every part of the result as OBSERVED (multi-view evidence), UNCERTAIN (seen, weak
+evidence) or GENERATED (never seen, completed from architectural constraints). It is independent of Mode A:
+`/mode-b` route, `/api/mode-b/*` API, own projects folder (`%USERPROFILE%\.archnext\mode_b`), own worker process and
+Python environment (`backend/mode_b/.venv`). Setup and the exact pipeline: [`backend/mode_b/README.md`](backend/mode_b/README.md).
+
+| Step | What runs (CPU only: this machine has no CUDA GPU) |
+|---|---|
+| Video | byte-level container check, OpenCV decode, keyframes (blur, near-duplicates, camera motion) |
+| Camera poses | COLMAP incremental SfM (pycolmap 4.2.1): SIFT, verified matching, mapping; a pose-consistency self-check (camera roll) retries the mapping and refuses distorted models |
+| Geometry | dense MVS **not** run (needs CUDA); Manhattan room layout fitted to the sparse points: up from camera axes, wall directions from image line segments (vanishing directions), floor / walls / ceiling as extended, oriented point layers |
+| VisionTrust | surface cells classified observed / uncertain / generated; constrained completion (planar walls to their intersections, observed bounds) with recorded assumptions |
+| GeometryTrust | documented per-cell evidence score (not a calibrated probability), heatmap |
+| NextBestView | candidate viewpoints inside the room scored by the unconfirmed area they would see; additional footage aligned (Sim3 on shared keyframes) into a new version |
+| Export | GLB (surfaces per class with evidence metadata, points, camera path); metres after a wall-length calibration |
+
+Research evaluation (A baseline / B VisionTrust / C + NextBestView clips / D + random clips, equal budget) on the
+TUM RGB-D benchmark (CC BY 4.0, real recordings with sensor depth and motion-capture poses): run
+`cd backend && mode_b\.venv\Scripts\python -m mode_b.evaluation.run_ablation`; results are stored in
+`backend/mode_b/results/` and shown on the Mode B Research page.
 
 ## Project layout
 

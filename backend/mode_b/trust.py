@@ -116,6 +116,8 @@ def build_surfaces(lay: Layout, completion: bool, cell_target: int = 12) -> list
             continue
         o, u, v = _rect(sid, box)
         lu, lv = np.linalg.norm(u), np.linalg.norm(v)
+        if lu < 1e-9 or lv < 1e-9:                            # degenerate (zero-size) surface: no cells
+            continue
         nu, nv = int(np.clip(round(lu / cs), 2, 24)), int(np.clip(round(lv / cs), 2, 24))
         normal = np.zeros(3)
         normal[axis] = nsign
