@@ -7,7 +7,8 @@ import ValidationView from './views/ValidationView.jsx'
 import Fix2BuildView from './views/Fix2BuildView.jsx'
 import { validSelection } from './lib/planGeometry.js'
 import { confirmDiscard, forgetTabPlan, lastPlan, rememberPlan, restoreOffers, saveState, tabPlan } from './lib/session.js'
-import { api } from './lib/api.js'
+import { api, REQUIRED_API_VERSION, STALE_BACKEND } from './lib/api.js'
+import { AlertTriangle } from 'lucide-react'
 
 // Browser storage can be unavailable (privacy modes); the app then simply does not remember the last plan.
 const storage = (name) => { try { return window[name] } catch { return null } }
@@ -32,6 +33,8 @@ export default function App() {
   const [restoring, setRestoring] = useState(null)
   const [offers, setOffers] = useState([])
   const [restoreNote, setRestoreNote] = useState('')
+  // API version of the running backend process; an older process lacks endpoints this interface calls.
+  const [backend, setBackend] = useState(null)
 
   const save = saveState(result, pending, fileRevision)
   const saveRef = useRef(save)
@@ -91,6 +94,23 @@ export default function App() {
       setRestoring(null)
     }
   }, [loadOffers])
+
+  // Is the backend process as new as this interface? Checked at start and, while it is not, every few seconds,
+  // so the warning disappears once the backend is restarted.
+  useEffect(() => {
+    let live = true
+    let timer
+    const check = async () => {
+      try {
+        const b = await api.backendVersion()
+        if (!live) return
+        setBackend(b)
+        if (!b.current) timer = setTimeout(check, 5000)
+      } catch { if (live) timer = setTimeout(check, 5000) }   // not reachable yet: requests report that themselves
+    }
+    check()
+    return () => { live = false; clearTimeout(timer) }
+  }, [])
 
   // Refresh: reopen this tab's plan on the page it was on (the backend restores it from its autosave if it was
   // restarted). A new tab or visit offers the recent plans on the Upload page instead.
@@ -157,6 +177,13 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <Header view={view} onView={changeView} hasResult={!!result} config={result?.config} onNew={newPlan} save={save} />
+      {backend && !backend.current && (
+        <div role="alert" data-testid="backend-outdated"
+             className="shrink-0 bg-warn/10 border-b border-warn/30 text-warn px-4 py-2 text-[12.5px] flex items-center gap-2">
+          <AlertTriangle size={15} className="shrink-0" />
+          <span>{STALE_BACKEND} (Backend API version {backend.version}, this interface needs {REQUIRED_API_VERSION}.)</span>
+        </div>
+      )}
       <main className="flex-1 min-h-0">
         {view === 'upload' && (
           <UploadView file={file} preview={preview} status={status} error={error} result={result}

@@ -112,7 +112,8 @@ export default function ValidationView({ result, onConfig, configBusy, configErr
   }, [result])
 
   const downloadDraft = async () => {
-    const draft = await fetch(`/api/plans/${result.id}/annotation-draft`).then((r) => r.json())
+    let draft
+    try { draft = await api.annotationDraft(result.id) } catch (e) { setEvalErr(e.message); return }
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 1)], { type: 'application/json' }))
     a.download = `${(result.filename || 'plan').replace(/\.[^.]+$/, '')}-answer-key-DRAFT.json`

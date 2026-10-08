@@ -52,6 +52,11 @@ npm run dev
 
 The first upload takes a few seconds longer while the text-recognition models load.
 
+`start_backend.bat` restarts the backend by itself when backend code changes (plans are autosaved, so they
+survive it). A backend process started before an update keeps serving the old API: the interface then shows
+*"The backend is running older code than this interface"* (it compares `api_version` from `/api/health`) and
+failed requests name the method and endpoint. Close that backend window and start it again.
+
 ---
 
 ## Detection: Standard, AI and Hybrid

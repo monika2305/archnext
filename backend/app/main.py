@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +36,9 @@ MAX_SESSIONS = 30
 UNIT_TO_M = {"m": 1.0, "cm": 0.01, "mm": 0.001, "ft": 0.3048, "in": 0.0254}
 ROOT = Path(__file__).resolve().parent.parent
 BENCHMARK_FILE = ROOT / "eval" / "results" / "benchmark.json"
+# Bumped whenever the interface starts relying on new endpoints, so an interface talking to an older backend
+# process can say so instead of failing on the first edit (1: no version reported, 2: Fix2Build, 3: autosave).
+API_VERSION = 3
 
 
 _load_lock = threading.Lock()
@@ -115,7 +118,7 @@ def _out(sess: PlanSession, **extra) -> dict:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "api_version": API_VERSION}
 
 
 @app.get("/api/ai/status")
@@ -344,6 +347,13 @@ def benchmark():
     if not BENCHMARK_FILE.exists():
         return JSONResponse({"available": False})
     return {"available": True, **json.loads(BENCHMARK_FILE.read_text(encoding="utf-8"))}
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+def unknown_api(path: str, request: Request):
+    """An API path that does not exist is a 404 with its method and path, never the web page below (which turned
+    a POST into "405 Method Not Allowed" and a GET into a 200 HTML page)."""
+    raise HTTPException(404, f"Unknown API endpoint: {request.method} /api/{path} (backend API version {API_VERSION}).")
 
 
 # Serve the built frontend when present (single-process demo mode).
