@@ -35,6 +35,8 @@ export const modeB = {
   cancel: (id) => request(`${base}/projects/${id}/cancel`, { method: 'POST' }),
   setScale: (id, body) => request(`${base}/projects/${id}/scale`, json(body)),
   research: () => request(`${base}/research`),
+  demos: () => request(`${base}/demos`),
+  createRgbd: (sequence) => request(`${base}/demos/rgbd`, json({ sequence })),
   upload(file, settings, name) {
     const fd = new FormData()
     fd.append('file', file)

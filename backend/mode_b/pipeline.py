@@ -193,7 +193,40 @@ def _reconstruct(status, pid: str, names: list[str], prev: dict | None, settings
             + ("" if lay.reliable else " (partial result: room layout not reliable)"))
 
 
+def run_rgbd(pid: str, sequence: str, status) -> str:
+    """RGB-D sensor demo (TUM depth + dataset poses); see rgbd.py. Never part of the video-only pipeline."""
+    from . import rgbd
+    d = projects.path(pid)
+    if sequence not in {x["sequence"] for x in rgbd.available()}:
+        raise StageFailed(f"The RGB-D sequence {sequence!r} is not available locally.")
+    with status.stage("frames") as st:
+        st.done(f"TUM RGB-D sequence {sequence}: colour + depth images with recorded camera poses")
+    with status.stage("fuse") as st:
+        scene, r = rgbd.build_scene(sequence, progress=st.progress)
+        manifest = rgbd.save_frames(r["seq"], r["frames_used"], d / "frames")
+        projects.write_json(d / "frames" / "manifest.json", manifest)
+        dg = scene["diagnostics"]
+        st.done(f"{dg['points_kept']:,} coloured points from {dg['frames_fused']} depth frames "
+                f"({dg['voxel_m'] * 100:.1f} cm voxels measured by >= {dg['min_views']} frames)")
+    with status.stage("export") as st:
+        glb = scene_to_glb(scene)
+        read_glb(glb)
+        scene["export"] = {"glb_bytes": len(glb), "meshes": 2}
+        st.done(f"GLB {len(glb) / 1e6:.1f} MB")
+    vdir = projects.version_dir(pid, 1)
+    vdir.mkdir(parents=True, exist_ok=True)
+    projects.write_json(vdir / "scene.json", scene)
+    proj = projects.load(pid)
+    proj["versions"] = [{"version": 1, "created": scene["created"], "videos": 0, "keyframes": dg["frames_fused"],
+                         "registered": dg["frames_fused"], "summary": {"observed": None, "generated": None, "reliable": None}}]
+    proj["current_version"] = 1
+    projects.save(pid, proj)
+    return f"RGB-D sensor reconstruction: {dg['points_kept']:,} points"
+
+
 def run(action: str, pid: str, args: list[str], status) -> str:
+    if action == "rgbd":
+        return run_rgbd(pid, args[0], status)
     proj = projects.load(pid)
     settings = ProcessingSettings.clean(proj.get("settings"))
     n = int(args[0]) if action == "extend" and args else 0

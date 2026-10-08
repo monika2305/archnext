@@ -27,6 +27,7 @@ STAGES = {
     "extend": [("video", "Validate additional video"), ("keyframes", "Select keyframes"),
                ("sfm", "Align with the existing reconstruction"), ("layout", "Reconstruct room geometry"),
                ("trust", "VisionTrust & GeometryTrust"), ("nbv", "NextBestView guidance"), ("export", "Export GLB")],
+    "rgbd": [("frames", "Load RGB-D sensor frames"), ("fuse", "Fuse depth measurements"), ("export", "Export GLB")],
 }
 
 

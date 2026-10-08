@@ -55,6 +55,8 @@ export function sceneBounds(scene) {
   const add = (p) => p.forEach((v, k) => { lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v) })
   for (const s of scene.surfaces || []) s.corners.forEach(add)
   for (const c of scene.cameras || []) add(c.center)
+  const xyz = scene.points?.xyz || []
+  if (!(scene.surfaces || []).length) for (let i = 0; i < xyz.length; i += 3 * 50) add([xyz[i], xyz[i + 1], xyz[i + 2]])
   if (!Number.isFinite(lo[0])) return { center: [0, 0, 0], size: 1 }
   return { center: lo.map((v, k) => (v + hi[k]) / 2), size: Math.max(...hi.map((v, k) => v - lo[k])), lo, hi }
 }

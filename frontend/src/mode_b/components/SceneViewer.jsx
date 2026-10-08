@@ -52,7 +52,12 @@ function Points({ points }) {
     return g
   }, [points])
   useEffect(() => () => geometry.dispose(), [geometry])
-  return <points geometry={geometry} raycast={() => null}><pointsMaterial size={2} sizeAttenuation={false} vertexColors /></points>
+  return (
+    <points geometry={geometry} raycast={() => null}>
+      {points.dense ? <pointsMaterial size={points.size * 1.5} sizeAttenuation vertexColors />
+        : <pointsMaterial size={2} sizeAttenuation={false} vertexColors />}
+    </points>
+  )
 }
 
 function Cameras({ cameras, size }) {

@@ -2,18 +2,19 @@ import { Box, Camera, Download, Film, FlaskConical, LayoutGrid, Plus, ShieldChec
 
 // Mode B header: same structure and styling as the Mode A header (components/Header.jsx), its own tabs.
 export const MODE_B_TABS = [
-  { key: 'overview', label: 'Overview', icon: LayoutGrid, needs: null },
-  { key: 'reconstruction', label: 'Reconstruction', icon: Film, needs: 'project' },
-  { key: 'scene', label: '3D Scene', icon: Box, needs: 'scene' },
-  { key: 'visiontrust', label: 'VisionTrust', icon: ShieldCheck, needs: 'scene' },
-  { key: 'nbv', label: 'NextBestView', icon: Camera, needs: 'scene' },
-  { key: 'research', label: 'Research', icon: FlaskConical, needs: null },
-  { key: 'export', label: 'Export', icon: Download, needs: 'scene' },
+  { key: 'overview', label: '1 Upload', icon: LayoutGrid, needs: null },
+  { key: 'reconstruction', label: '2 Generate 3D', icon: Film, needs: 'project' },
+  { key: 'scene', label: '3 Explore room', icon: Box, needs: 'scene' },
+  { key: 'export', label: '4 Export', icon: Download, needs: 'scene' },
+  { key: 'visiontrust', label: 'VisionTrust', icon: ShieldCheck, needs: 'analysis', advanced: true },
+  { key: 'nbv', label: 'NextBestView', icon: Camera, needs: 'analysis', advanced: true },
+  { key: 'research', label: 'Research', icon: FlaskConical, needs: null, advanced: true },
 ]
 
 export function tabEnabled(tab, { project, scene }) {
   if (tab.needs === 'project') return !!project
   if (tab.needs === 'scene') return !!scene
+  if (tab.needs === 'analysis') return !!scene && scene.kind !== 'rgbd'
   return true
 }
 
@@ -33,18 +34,21 @@ export default function ModeBHeader({ view, onView, project, scene, onNew }) {
       </div>
 
       <nav className="flex items-center gap-1 mx-auto" aria-label="Mode B">
-        {MODE_B_TABS.map((t) => {
+        {MODE_B_TABS.map((t, k) => {
           const Icon = t.icon
           const disabled = !tabEnabled(t, { project, scene })
           const active = view === t.key
           return (
-            <button key={t.key} disabled={disabled} onClick={() => onView(t.key)} title={t.label}
+            <span key={t.key} className="contents">
+            {t.advanced && !MODE_B_TABS[k - 1].advanced && <span className="w-px h-5 bg-line mx-1.5" title="Advanced" />}
+            <button disabled={disabled} onClick={() => onView(t.key)} title={t.label}
               className={`h-9 px-3 rounded-lg flex items-center gap-2 whitespace-nowrap text-[13px] font-medium transition-colors
                 ${active ? 'bg-accent-soft text-accent-dark' : 'text-ink-soft hover:bg-paper'}
                 disabled:opacity-35 disabled:hover:bg-transparent disabled:cursor-not-allowed`}>
               <Icon size={15} strokeWidth={1.8} />
-              <span className="hidden xl:inline">{t.label}</span>
+              <span className={`hidden xl:inline ${t.advanced ? 'text-[12px]' : ''}`}>{t.label}</span>
             </button>
+            </span>
           )
         })}
       </nav>

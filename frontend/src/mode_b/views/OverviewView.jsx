@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
-import { AlertTriangle, ArrowRight, ChevronDown, Film, Loader2, Settings2, Upload, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { modeB } from '../api.js'
+import { AlertTriangle, ArrowRight, ChevronDown, Database, Film, Loader2, Settings2, Upload, X } from 'lucide-react'
 import { TRUST_CLASSES } from '../lib/trust.js'
 
 const DEFAULTS = { sample_fps: 6, max_keyframes: 150, min_motion: 0.025, blur_ratio: 0.45, completion: true }
@@ -36,6 +37,13 @@ export default function OverviewView({ projects, onOpen, onUploaded, worker }) {
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
   const workerProblem = worker && !worker.ok
+  const [demos, setDemos] = useState([])
+  const [demoBusy, setDemoBusy] = useState(null)
+  useEffect(() => { modeB.demos().then((r) => setDemos(r.sequences)).catch(() => setDemos([])) }, [])
+  const startDemo = async (seq) => {
+    setDemoBusy(seq); setError('')
+    try { const r = await modeB.createRgbd(seq); onOpen(r.project.id) } catch (e) { setError(e.message) } finally { setDemoBusy(null) }
+  }
 
   return (
     <div className="h-full overflow-auto scrollbar-thin">
@@ -119,6 +127,19 @@ export default function OverviewView({ projects, onOpen, onUploaded, worker }) {
         </div>
 
         <aside className="space-y-4">
+          {demos.length > 0 && (
+            <div className="card p-4" data-testid="rgbd-demo">
+              <div className="card-title flex items-center gap-1.5"><Database size={14} className="text-accent" />RGB-D sensor demo</div>
+              <p className="text-[12px] text-ink-mute mt-1 leading-snug">Dense reconstruction from the TUM RGB-D dataset's <b>depth-sensor images and recorded
+                camera poses</b> (stored on this computer). Not video-only reconstruction — shown separately for comparison.</p>
+              <div className="mt-2.5 flex flex-col gap-1.5">
+                {demos.filter((d) => !/360|nostructure/.test(d.sequence)).map((d) => (
+                  <button key={d.sequence} className="btn-secondary btn-sm justify-between" disabled={!!demoBusy} onClick={() => startDemo(d.sequence)}>
+                    <span className="capitalize">{d.label}</span>{demoBusy === d.sequence ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+                  </button>))}
+              </div>
+            </div>
+          )}
           <div className="card p-4">
             <div className="card-title mb-2">Recording tips</div>
             <ul className="text-[12.5px] text-ink-soft space-y-1.5 list-disc pl-4">

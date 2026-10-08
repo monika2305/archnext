@@ -92,6 +92,36 @@ async def create_project(file: UploadFile = File(...), settings: str = Form("{}"
     return {"project": projects.load(pid), "status": jobs.status(pid)}
 
 
+@router.get("/demos")
+def demos():
+    """Locally available TUM RGB-D sequences for the RGB-D sensor demo (no download)."""
+    from .evaluation.tum import ROOT
+    out = []
+    if ROOT.is_dir():
+        for p in sorted(ROOT.iterdir()):
+            if all((p / f).exists() for f in ("rgb.txt", "depth.txt", "groundtruth.txt")):
+                out.append({"sequence": p.name, "label": p.name.replace("rgbd_dataset_", "").replace("_", " ")})
+    return {"sequences": out}
+
+
+class RgbdBody(BaseModel):
+    sequence: str = Field(..., pattern=r"^rgbd_dataset_[a-z0-9_]{3,80}$")
+
+
+@router.post("/demos/rgbd")
+def create_rgbd_demo(body: RgbdBody):
+    """RGB-D SENSOR DEMO project: dense reconstruction from TUM depth images + recorded poses (not video-only)."""
+    if body.sequence not in {d["sequence"] for d in demos()["sequences"]}:
+        raise HTTPException(404, "This RGB-D sequence is not available locally.")
+    pid, d = projects.create(f"RGB-D sensor demo: {body.sequence.replace('rgbd_dataset_', '')}", {})
+    proj = projects.load(pid)
+    proj["kind"] = "rgbd"
+    proj["source"] = {"type": "RGB-D sensor demo", "dataset": "TUM RGB-D (CC BY 4.0)", "sequence": body.sequence}
+    projects.save(pid, proj)
+    jobs.start(pid, "rgbd", body.sequence)
+    return {"project": projects.load(pid), "status": jobs.status(pid)}
+
+
 @router.get("/projects/{pid}")
 def get_project(pid: str):
     proj = _project(pid)
