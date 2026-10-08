@@ -8,6 +8,7 @@ Two geometry versions are always produced from the same parser output:
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from . import ai_detect as ad
+from . import cubicasa as cc
 from . import scalelock as sl
 from . import fixes as fx
 from . import topology as tg
@@ -62,6 +65,14 @@ class PlanInputs:
     ocr_ok: bool
     det: WallDetection
     timings: dict
+    mode: str = "standard"                      # requested detection mode: standard | ai | hybrid
+    detection: dict = field(default_factory=dict)  # what actually ran (incl. fallback reason)
+    cv_det: "WallDetection | None" = None       # OpenCV parser output (shared by all modes)
+    ai: "cc.AIPrediction | None" = None         # pretrained prediction (shared by AI and Hybrid)
+
+    @property
+    def ai_used(self) -> "cc.AIPrediction | None":
+        return self.ai if self.detection.get("used") in ("ai", "hybrid") else None
 
 
 @dataclass
@@ -93,13 +104,17 @@ class PlanSession:
     history: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
     inputs: "PlanInputs | None" = None
-    variants: dict = field(default_factory=dict)   # (topology_guard, scale_lock) -> saved state
+    variants: dict = field(default_factory=dict)   # (detection, topology_guard, scale_lock) -> saved state
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 # Everything that differs between pipeline configurations; switching swaps these as a unit.
 VARIANT_FIELDS = ("original", "corrected", "issues", "measurements", "auto_scale", "scale", "warnings", "edited",
-                  "config", "auto_version", "auto_issues", "auto_scale_initial", "fix_specs", "fix_log", "history")
+                  "config", "auto_version", "auto_issues", "auto_scale_initial", "fix_specs", "fix_log", "history",
+                  "inputs", "thickness", "wall_mask")
+DETECTION_MODES = ("standard", "ai", "hybrid")
+# Mode used for new uploads. Chosen from the measured comparison (eval/results/real_plans.md).
+DEFAULT_DETECTION = os.environ.get("ARCHNEXT_DETECTION", "standard")
 
 
 def _mark_exterior(walls: list[Wall], exterior: np.ndarray, t: float) -> None:
@@ -119,9 +134,23 @@ def _mark_exterior(walls: list[Wall], exterior: np.ndarray, t: float) -> None:
         w.exterior = ext
 
 
+def _openings(walls: list[Wall], t: float, img: PreparedImage, ai) -> list[dict]:
+    """Gap-based door / window detection; with an AI prediction the type comes from its icon map."""
+    openings = detect_openings(walls, find_gaps(walls, t, MAX_OPENING), t, img.soft)
+    if ai is not None:
+        ad.retype_openings(openings, ai, t)
+        openings += ad.ai_gap_openings(walls, t, img.soft, ai, openings)
+        openings.sort(key=lambda o: (o["y1"], o["x1"]))
+        for i, o in enumerate(openings):
+            o["id"] = f"o{i + 1}"
+    return openings
+
+
 def _build_version(walls: list[Wall], solids: list[dict], openings: list[dict], shape, t: float,
-                   texts: list[TextItem]) -> GeometryVersion:
+                   texts: list[TextItem], ai=None) -> GeometryVersion:
     rooms, labels, exterior = extract_rooms(shape, walls, openings, solids, t, texts)
+    if ai is not None:
+        ad.label_rooms(rooms, labels, ai)
     _mark_exterior(walls, exterior, t)
     # Conservative classification: glazing-like gaps on purely interior walls are far more often
     # sliding doors, glazed partitions or door frames than windows, so they are not called windows.
@@ -147,24 +176,58 @@ def _scale_from(auto_scale: dict, version: GeometryVersion, t: float) -> dict:
     return {"status": "estimated", "meters_per_px": est["scale"], "confidence": None, "basis": est["basis"]}
 
 
-def prepare_inputs(data: bytes) -> PlanInputs:
-    timings = {}
-    t0 = time.time()
-    img = prepare(data)
-    timings["preprocess"] = time.time() - t0
-    t1 = time.time()
-    texts, ocr_ok = read_text(img.rgb)
-    timings["ocr"] = time.time() - t1
-    text_boxes = [(int(tx.x), int(tx.y), int(tx.w), int(tx.h)) for tx in texts]
-    t2 = time.time()
-    det = detect_walls(img.dark, text_boxes)
-    timings["walls"] = time.time() - t2
-    ok, buf = cv2.imencode(".png", cv2.cvtColor(img.rgb, cv2.COLOR_RGB2BGR))
-    return PlanInputs(img, buf.tobytes(), texts, ocr_ok, det, timings)
+def prepare_inputs(data: bytes, mode: str = "standard", base: "PlanInputs | None" = None) -> PlanInputs:
+    """Preprocessing, OCR and wall detection for one detection mode.
+
+    ``base`` (inputs of another mode for the same upload) shares the image, OCR, OpenCV parse and AI
+    prediction, so switching modes never repeats them. AI and Hybrid fall back to Standard, with the reason
+    recorded, when the pretrained model is unavailable or fails.
+    """
+    if mode not in DETECTION_MODES:
+        raise ValueError(f"Unknown detection mode: {mode}")
+    if base is None:
+        timings = {}
+        t0 = time.time()
+        img = prepare(data)
+        timings["preprocess"] = time.time() - t0
+        t1 = time.time()
+        texts, ocr_ok = read_text(img.rgb)
+        timings["ocr"] = time.time() - t1
+        text_boxes = [(int(tx.x), int(tx.y), int(tx.w), int(tx.h)) for tx in texts]
+        t2 = time.time()
+        cv_det = ad.cv_detection_or_none(img.dark, text_boxes)
+        timings["walls"] = time.time() - t2
+        ok, buf = cv2.imencode(".png", cv2.cvtColor(img.rgb, cv2.COLOR_RGB2BGR))
+        png, ai = buf.tobytes(), None
+    else:
+        img, png, texts, ocr_ok, cv_det, ai = base.img, base.png, base.texts, base.ocr_ok, base.cv_det, base.ai
+        timings = {k: v for k, v in base.timings.items() if k in ("preprocess", "ocr", "walls", "ai")}
+
+    detection = {"requested": mode, "used": "standard", "fallback": None}
+    det = None
+    if mode != "standard":
+        try:
+            if ai is None:
+                t3 = time.time()
+                ai = cc.predict(img.rgb)
+                timings["ai"] = time.time() - t3
+            det = ad.ai_walls(ai) if mode == "ai" else ad.hybrid_walls(ai, cv_det, img.soft)
+            detection["used"] = mode
+            detection["ai_seconds"] = ai.seconds
+        except cc.ModelUnavailable as exc:
+            detection["fallback"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - any inference/conversion failure falls back to Standard
+            detection["fallback"] = f"AI detection failed: {exc}"
+    if det is None:
+        if cv_det is None:
+            text_boxes = [(int(tx.x), int(tx.y), int(tx.w), int(tx.h)) for tx in texts]
+            detect_walls(img.dark, text_boxes)   # raises the parser's own, user-readable error
+        det = cv_det
+    return PlanInputs(img, png, texts, ocr_ok, det, timings, mode=mode, detection=detection, cv_det=cv_det, ai=ai)
 
 
 def process_plan(data: bytes, filename: str = "plan", topology_guard: bool = True,
-                 scale_lock: bool = True, inputs: PlanInputs | None = None) -> PlanSession:
+                 scale_lock: bool = True, inputs: PlanInputs | None = None, detection: str = "standard") -> PlanSession:
     """Run the reconstruction pipeline.
 
     ``topology_guard`` and ``scale_lock`` switch the two contributions on or off independently; the
@@ -172,20 +235,24 @@ def process_plan(data: bytes, filename: str = "plan", topology_guard: bool = Tru
     Passing ``inputs`` reuses those shared stages instead of recomputing them.
     """
     if inputs is None:
-        inputs = prepare_inputs(data)
+        inputs = prepare_inputs(data, detection)
     img, texts, det = inputs.img, inputs.texts, inputs.det
+    ai = inputs.ai_used
     timings = dict(inputs.timings)
     t = det.thickness
     shape = img.dark.shape
     warnings = list(img.warnings) + list(det.warnings)
     if not inputs.ocr_ok:
         warnings.append("Text recognition is unavailable, so room names and automatic scale could not be read.")
+    if inputs.detection.get("fallback"):
+        warnings.append(f"{inputs.mode.upper() if inputs.mode == 'ai' else inputs.mode.title()} detection was not "
+                        f"available, Standard detection was used instead ({inputs.detection['fallback']}).")
 
     # Baseline: parser output with its own opening detection, no TopologyGuard.
     t2 = time.time()
     raw = [w.copy() for w in det.walls]
-    raw_openings = detect_openings(raw, find_gaps(raw, t, MAX_OPENING), t, img.soft)
-    original = _build_version(raw, det.solids, raw_openings, shape, t, texts)
+    raw_openings = _openings(raw, t, img, ai)
+    original = _build_version(raw, det.solids, raw_openings, shape, t, texts, ai)
     timings["parse"] = time.time() - t2
 
     # TopologyGuard (automatic, conservative corrections).
@@ -193,10 +260,10 @@ def process_plan(data: bytes, filename: str = "plan", topology_guard: bool = Tru
     auto_issues: list[tg.Issue] = []
     if topology_guard:
         corr_walls, issues = tg.run_corrections(det.walls, t)
-        openings = detect_openings(corr_walls, find_gaps(corr_walls, t, MAX_OPENING), t, img.soft)
+        openings = _openings(corr_walls, t, img, ai)
         openings, op_issues = tg.validate_openings(corr_walls, openings, t)
         auto_issues = [i for i in issues + op_issues if i.status == "corrected"]
-        corrected = _build_version(corr_walls, det.solids, openings, shape, t, texts)
+        corrected = _build_version(corr_walls, det.solids, openings, shape, t, texts, ai)
     else:
         corrected = original
     timings["topologyguard"] = time.time() - t3
@@ -218,7 +285,7 @@ def process_plan(data: bytes, filename: str = "plan", topology_guard: bool = Tru
                        scale=scale, warnings=warnings, timings=timings)
     sess.data = data
     sess.inputs = inputs
-    sess.config = {"topology_guard": topology_guard, "scale_lock": scale_lock}
+    sess.config = {"topology_guard": topology_guard, "scale_lock": scale_lock, "detection": inputs.mode}
     sess.auto_version = corrected
     sess.auto_issues = auto_issues
     sess.auto_scale_initial = dict(auto_scale)
@@ -234,27 +301,44 @@ CONFIG_KEYS = {(False, False): "baseline", (True, False): "topologyguard_only",
                (False, True): "scalelock_only", (True, True): "full"}
 
 
-def _cfg_key(sess: PlanSession) -> tuple[bool, bool]:
-    return bool(sess.config.get("topology_guard", True)), bool(sess.config.get("scale_lock", True))
+def _cfg_key(sess: PlanSession) -> tuple[str, bool, bool]:
+    return (sess.config.get("detection", "standard"), bool(sess.config.get("topology_guard", True)),
+            bool(sess.config.get("scale_lock", True)))
 
 
-def _variant_state(sess: PlanSession, key: tuple[bool, bool]) -> dict:
+def _inputs_for(sess: PlanSession, mode: str) -> PlanInputs:
+    """Inputs of a detection mode, reusing image, OCR, OpenCV parse and AI prediction of this upload."""
+    if sess.inputs.mode == mode:
+        return sess.inputs
+    for st in sess.variants.values():
+        if st["inputs"].mode == mode:
+            return st["inputs"]
+    return prepare_inputs(sess.data, mode, base=sess.inputs)
+
+
+def _variant_state(sess: PlanSession, key: tuple[str, bool, bool]) -> dict:
     """Saved state of a configuration, computing its automatic result on first use."""
     if key == _cfg_key(sess):
         return {f: getattr(sess, f) for f in VARIANT_FIELDS}
     if key not in sess.variants:
-        fresh = process_plan(sess.data, sess.filename, key[0], key[1], inputs=sess.inputs)
+        inputs = _inputs_for(sess, key[0])
+        if inputs.ai is not None and sess.inputs.ai is None:
+            sess.inputs.ai = inputs.ai          # share the prediction with every later mode switch
+        fresh = process_plan(sess.data, sess.filename, key[1], key[2], inputs=inputs)
         sess.variants[key] = {f: getattr(fresh, f) for f in VARIANT_FIELDS}
     return sess.variants[key]
 
 
-def set_config(sess: PlanSession, topology_guard: bool, scale_lock: bool) -> None:
-    """Switch the uploaded plan to another pipeline configuration.
+def set_config(sess: PlanSession, topology_guard: bool, scale_lock: bool, detection: str | None = None) -> None:
+    """Switch the uploaded plan to another pipeline configuration (detection mode and/or the two switches).
 
     Each configuration keeps its own geometry, fixes, undo history and calibration, so switching back
     restores exactly what was there before.
     """
-    new = (bool(topology_guard), bool(scale_lock))
+    mode = detection or sess.config.get("detection", "standard")
+    if mode not in DETECTION_MODES:
+        raise ValueError(f"Unknown detection mode: {mode}")
+    new = (mode, bool(topology_guard), bool(scale_lock))
     cur = _cfg_key(sess)
     if new == cur:
         return
@@ -298,13 +382,14 @@ def compare_configs(sess: PlanSession) -> dict:
     """Measured indicators for this plan (no ground truth): the automatic output of all four
     configurations, plus the current state including the user's own fixes and calibration."""
     out = {}
-    for key, name in CONFIG_KEYS.items():
-        st = _variant_state(sess, key)
+    mode = _cfg_key(sess)[0]
+    for (tg_on, sl_on), name in CONFIG_KEYS.items():
+        st = _variant_state(sess, (mode, tg_on, sl_on))
         v = st["auto_version"]
         auto = st["auto_scale_initial"]
         scale = _scale_from(auto, v, sess.thickness)
         out[name] = _summary(sess, v, scale, st["measurements"] if auto.get("scale") else [], auto)
-    return _plain({"configs": out, "config": dict(sess.config), "config_key": CONFIG_KEYS[_cfg_key(sess)],
+    return _plain({"configs": out, "config": dict(sess.config), "config_key": CONFIG_KEYS[_cfg_key(sess)[1:]],
                    "current": _summary(sess, sess.corrected, sess.scale, sess.measurements, sess.auto_scale)})
 
 
@@ -326,10 +411,11 @@ def refresh_issues(sess: PlanSession) -> None:
 def _rebuild(sess: PlanSession, walls: list[Wall]) -> GeometryVersion:
     t = sess.thickness
     img = sess.image
-    openings = detect_openings(walls, find_gaps(walls, t, MAX_OPENING), t, img.soft)
+    ai = sess.inputs.ai_used if sess.inputs else None
+    openings = _openings(walls, t, img, ai)
     if sess.config.get("topology_guard", True):
         openings, _ = tg.validate_openings(walls, openings, t)
-    return _build_version(walls, sess.corrected.solids, openings, img.dark.shape, t, sess.texts)
+    return _build_version(walls, sess.corrected.solids, openings, img.dark.shape, t, sess.texts, ai)
 
 
 def _commit(sess: PlanSession, version: GeometryVersion, log: dict) -> None:
@@ -540,7 +626,7 @@ def _scale_checks(sess: PlanSession) -> tuple[list[dict], list[str]]:
 
 def _room_out(r: dict, s: float) -> dict:
     out = {k: r[k] for k in ("id", "name", "type", "polygon", "centroid", "rectangularity", "label_texts")}
-    out["name"] = r["name"] or f"Room {r['id'][1:]}"
+    out["name"] = r["name"] or r.get("ai_name") or f"Room {r['id'][1:]}"
     out["named"] = r["name"] is not None
     out["area_m2"] = round(r["area_px"] * s * s, 2)
     out["length_m"] = round(r["rect_px"][0] * s, 2)
@@ -552,8 +638,8 @@ def _room_out(r: dict, s: float) -> dict:
 def _version_out(v: GeometryVersion, s: float) -> dict:
     return {
         "walls": [w.to_dict() for w in v.walls],
-        "openings": [{k: o[k] for k in ("id", "type", "confidence", "x1", "y1", "x2", "y2", "width", "thickness", "hosts")}
-                     for o in v.openings],
+        "openings": [{**{k: o[k] for k in ("id", "type", "confidence", "x1", "y1", "x2", "y2", "width", "thickness",
+                                           "hosts")}, "source": o.get("source", "parser")} for o in v.openings],
         "rooms": [_room_out(r, s) for r in v.rooms],
         "solids": v.solids,
         "dangling": [[round(x, 1), round(y, 1)] for (_, _, x, y) in v.dangling],
@@ -611,6 +697,8 @@ def _session_result(sess: PlanSession) -> dict:
                      "can_undo": bool(sess.history), "edited": sess.edited},
         "texts": [t.to_dict() for t in sess.texts],
         "config": dict(sess.config),
+        "detection": {**(sess.inputs.detection if sess.inputs else {"requested": "standard", "used": "standard"}),
+                      "ai_available": cc.status()["available"]},
         "warnings": [w for w in sess.warnings
                      if not (sess.scale["status"] != "estimated" and w.startswith("No reliable dimension labels"))],
         "ocr_available": sess.ocr_available,

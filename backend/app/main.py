@@ -7,16 +7,19 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from typing import Literal
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .evaluation import evaluate_session
+from .pipeline import cubicasa
 from .pipeline.preprocess import PlanImageError
-from .pipeline.run import (PlanSession, apply_manual_scale, apply_user_fix, compare_configs, edit_wall_end,
-                           process_plan, reset_scale, session_result, set_config, undo_user_fix)
+from .pipeline.run import (DEFAULT_DETECTION, PlanSession, apply_manual_scale, apply_user_fix, compare_configs,
+                           edit_wall_end, process_plan, reset_scale, session_result, set_config, undo_user_fix)
 
 log = logging.getLogger("archnext")
 logging.basicConfig(level=logging.INFO)
@@ -45,11 +48,18 @@ def health():
     return {"ok": True}
 
 
+@app.get("/api/ai/status")
+def ai_status():
+    """Whether the pretrained CubiCasa5K model can run here (no model load)."""
+    return {**cubicasa.status(), "default_detection": DEFAULT_DETECTION}
+
+
 @app.post("/api/plans")
-async def upload_plan(file: UploadFile = File(...)):
+async def upload_plan(file: UploadFile = File(...),
+                      detection: Literal["standard", "ai", "hybrid"] = Form(DEFAULT_DETECTION)):
     data = await file.read()
     try:
-        sess = process_plan(data, file.filename or "plan")
+        sess = process_plan(data, file.filename or "plan", detection=detection)
     except PlanImageError as exc:
         raise HTTPException(400, str(exc)) from exc
     except ValueError as exc:
@@ -157,6 +167,7 @@ def edit_wall(plan_id: str, body: WallEdit):
 class PipelineConfig(BaseModel):
     topology_guard: bool
     scale_lock: bool
+    detection: Literal["standard", "ai", "hybrid"] | None = None
 
 
 @app.post("/api/plans/{plan_id}/config")
@@ -164,7 +175,10 @@ def change_config(plan_id: str, body: PipelineConfig):
     """Switch TopologyGuard / ScaleLock for this plan; geometry, scale and checks are recomputed."""
     sess = _get(plan_id)
     with sess.lock:
-        set_config(sess, body.topology_guard, body.scale_lock)
+        try:
+            set_config(sess, body.topology_guard, body.scale_lock, body.detection)
+        except ValueError as exc:   # e.g. the selected detector cannot build a model from this image
+            raise HTTPException(422, str(exc)) from exc
         return session_result(sess)
 
 

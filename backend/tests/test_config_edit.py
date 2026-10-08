@@ -23,7 +23,7 @@ def test_all_four_configs_change_the_current_plan(synth_png):
     for tg_on, sl_on in CONFIGS:
         set_config(sess, tg_on, sl_on)
         res = session_result(sess)
-        assert res["config"] == {"topology_guard": tg_on, "scale_lock": sl_on}
+        assert res["config"] == {"topology_guard": tg_on, "scale_lock": sl_on, "detection": "standard"}
         corr, orig = res["geometry"]["corrected"], res["geometry"]["original"]
         if not tg_on:
             # Without TopologyGuard the plan is the raw parser output and no checks or fixes are offered.
@@ -99,7 +99,7 @@ def test_manual_edit_never_closes_a_door():
 
 def test_config_edit_and_compare_api():
     d = client.post("/api/plans", files={"file": ("p.png", _plan(short_gap=2 * T), "image/png")}).json()
-    assert d["config"] == {"topology_guard": True, "scale_lock": True}
+    assert d["config"] == {"topology_guard": True, "scale_lock": True, "detection": "standard"}
     r = client.post(f"/api/plans/{d['id']}/config", json={"topology_guard": False, "scale_lock": True})
     assert r.status_code == 200 and r.json()["config"]["topology_guard"] is False
     c = client.get(f"/api/plans/{d['id']}/compare").json()

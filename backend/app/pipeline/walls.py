@@ -154,7 +154,9 @@ def _bands(comp: np.ndarray, axis: int, tol: float) -> list[tuple[int, int, int,
     return [tuple(b[:4]) for b in done]
 
 
-def vectorise(mask: np.ndarray, thickness: float, max_thickness: float) -> tuple[list[Wall], list[dict]]:
+def vectorise(mask: np.ndarray, thickness: float, max_thickness: float,
+              min_thick: float = 0.45) -> tuple[list[Wall], list[dict]]:
+    """``min_thick``: thinnest band kept, as a fraction of ``thickness`` (clean AI masks allow thinner walls)."""
     t = thickness
     # The run-length kernel must be longer than the thickest wall so that perpendicular walls vanish.
     L = int(max(2.2 * max_thickness, 2.5 * t, 12))
@@ -173,7 +175,7 @@ def vectorise(mask: np.ndarray, thickness: float, max_thickness: float) -> tuple
                 rx0 += x; rx1 += x; ry0 += y; ry1 += y
                 rw, rh = rx1 - rx0, ry1 - ry0
                 length, thick = (rw, rh) if orient == "h" else (rh, rw)
-                if length < 1.6 * t or thick < 0.45 * t:
+                if length < 1.6 * t or thick < min_thick * t:
                     continue
                 if thick > max(2.6 * t, 1.5 * max_thickness) and length < 3 * thick:
                     solids.append({"x0": rx0, "y0": ry0, "x1": rx1, "y1": ry1})
