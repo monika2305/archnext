@@ -15,7 +15,7 @@ const ResearchView = lazy(() => import('./views/ResearchView.jsx'))
 const ExportView = lazy(() => import('./views/ExportView.jsx'))
 
 // Mode B dashboard (room video -> 3D). Independent of Mode A: own state, API, views and viewer.
-export default function ModeBApp() {
+export default function ModeBApp({ onHome, onModeA }) {
   const initial = readLocation(window.location)
   const [view, setView] = useState(initial.view)
   const [projectId, setProjectId] = useState(initial.project)
@@ -105,7 +105,7 @@ export default function ModeBApp() {
   return (
     <div className="h-full flex flex-col" data-mode="b">
       <ModeBHeader view={shown} onView={setView} project={project} scene={scene}
-                   onNew={() => { setProjectId(null); setView('overview') }} />
+                   onNew={() => { setProjectId(null); setView('overview') }} onHome={onHome} />
       {error && <div role="alert" className="shrink-0 bg-bad/5 border-b border-bad/20 text-bad px-4 py-2 text-[12.5px]">{error}</div>}
       <main className="flex-1 min-h-0">
         <Suspense fallback={<div className="h-full grid place-items-center"><Loader2 className="animate-spin text-accent" /></div>}>

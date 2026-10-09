@@ -15,7 +15,7 @@ const storage = (name) => { try { return window[name] } catch { return null } }
 const local = storage('localStorage')
 const tab = storage('sessionStorage')
 
-export default function App() {
+export default function App({ onHome, onModeB }) {
   const [view, setView] = useState('upload')
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState(null)
@@ -176,7 +176,7 @@ export default function App() {
 
   return (
     <div className="h-full flex flex-col">
-      <Header view={view} onView={changeView} hasResult={!!result} config={result?.config} onNew={newPlan} save={save} />
+      <Header view={view} onView={changeView} hasResult={!!result} config={result?.config} onNew={newPlan} save={save} onHome={onHome} />
       {backend && !backend.current && (
         <div role="alert" data-testid="backend-outdated"
              className="shrink-0 bg-warn/10 border-b border-warn/30 text-warn px-4 py-2 text-[12.5px] flex items-center gap-2">

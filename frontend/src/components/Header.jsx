@@ -18,19 +18,24 @@ function ConfigDot({ on, label }) {
   )
 }
 
-export default function Header({ view, onView, hasResult, config, onNew, save }) {
+export default function Header({ view, onView, hasResult, config, onNew, save, onHome }) {
   return (
     <header className="h-14 shrink-0 bg-white/90 backdrop-blur border-b border-line flex items-center px-3 lg:px-5 gap-3 lg:gap-6">
-      <div className="flex items-center gap-2.5 xl:min-w-[230px] shrink-0">
+      <a href="/" onClick={(e) => { e.preventDefault(); if (onHome) onHome(); else window.location.href = '/'; }}
+         className="flex items-center gap-2.5 xl:min-w-[230px] shrink-0 hover:opacity-80 transition-opacity cursor-pointer text-inherit no-underline"
+         title="Back to ArchNext Home">
         <svg viewBox="0 0 32 32" className="w-7 h-7" aria-hidden>
           <rect width="32" height="32" rx="7" fill="#3F6A8F" />
           <path d="M8 23V9h9v6h7v8z" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinejoin="round" />
         </svg>
         <div className="leading-tight">
-          <div className="text-[14px] font-semibold tracking-tight">ArchNext</div>
+          <div className="text-[14px] font-semibold tracking-tight flex items-center gap-1.5">
+            ArchNext
+            <span className="chip bg-accent-soft text-accent-dark h-5 px-1.5 text-[10.5px]">Blueprint → 3D</span>
+          </div>
           <div className="text-[11px] text-ink-mute hidden lg:block">Every Line Becomes a Space.</div>
         </div>
-      </div>
+      </a>
 
       <nav className="flex items-center gap-1 mx-auto">
         {TABS.map(({ key, label, icon: Icon }) => {
