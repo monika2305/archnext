@@ -81,17 +81,31 @@ function SelectedCell({ surface, cell }) {
   return <Line points={[...q, q[0]]} color="#22d3ee" lineWidth={3} raycast={() => null} />
 }
 
-function Points({ points }) {
+// Display only (stored points are never changed): photo colours are sRGB, so they are converted to linear for
+// Three.js (otherwise they look washed out); for dense RGB-D clouds, cells measured by only 2 frames - mostly floating
+// fringe noise - are hidden unless minViews is lowered.
+function Points({ points, minViews = 0 }) {
   const geometry = useMemo(() => {
+    const keep = []
+    const n = points.xyz.length / 3
+    for (let i = 0; i < n; i++) if (!minViews || !points.views || points.views[i] >= minViews) keep.push(i)
+    const pos = new Float32Array(keep.length * 3)
+    const col = new Float32Array(keep.length * 3)
+    keep.forEach((i, k) => {
+      for (let c = 0; c < 3; c++) {
+        pos[3 * k + c] = points.xyz[3 * i + c]
+        col[3 * k + c] = points.dense ? Math.pow(points.rgb[3 * i + c] / 255, 2.2) : points.rgb[3 * i + c] / 255
+      }
+    })
     const g = new THREE.BufferGeometry()
-    g.setAttribute('position', new THREE.Float32BufferAttribute(points.xyz, 3))
-    g.setAttribute('color', new THREE.Float32BufferAttribute(points.rgb.map((v) => v / 255), 3))
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3))
     return g
-  }, [points])
+  }, [points, minViews])
   useEffect(() => () => geometry.dispose(), [geometry])
   return (
     <points geometry={geometry} raycast={() => null}>
-      {points.dense ? <pointsMaterial size={points.size * 1.5} sizeAttenuation vertexColors />
+      {points.dense ? <pointsMaterial size={points.size * 2.2} sizeAttenuation vertexColors />
         : <pointsMaterial size={3.5} sizeAttenuation={false} vertexColors />}
     </points>
   )
@@ -137,7 +151,7 @@ function NbvMarker({ rec, size }) {
   )
 }
 
-function Rig({ bounds, resetKey, controls, walk, startCam }) {
+function Rig({ bounds, resetKey, controls, walk, startCam, dense }) {
   const { camera } = useThree()
   useEffect(() => {
     const [cx, cy, cz] = bounds.center
@@ -151,10 +165,11 @@ function Rig({ bounds, resetKey, controls, walk, startCam }) {
       return
     }
     // Elevated 3/4 architectural eye-level perspective looking gently into the room
-    camera.position.set(cx + d * 0.65, cy + d * 0.45, cz + d * 0.65)
+    const k = dense ? 0.72 : 1        // dense RGB-D clouds: frame the room more tightly
+    camera.position.set(cx + d * 0.65 * k, cy + d * 0.45 * k, cz + d * 0.65 * k)
     controls.current?.target.set(cx, cy, cz)
     controls.current?.update()
-  }, [bounds, resetKey, camera, controls, walk, startCam])
+  }, [bounds, resetKey, camera, controls, walk, startCam, dense])
   return null
 }
 
@@ -221,7 +236,7 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
       <ambientLight intensity={0.9} />
       <directionalLight position={[bounds.center[0] + bounds.size, bounds.center[1] + bounds.size * 1.8, bounds.center[2] + bounds.size]} intensity={0.65} />
       <directionalLight position={[bounds.center[0] - bounds.size, bounds.center[1] + bounds.size * 0.8, bounds.center[2] - bounds.size]} intensity={0.3} color="#F5EFE6" />
-      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} />
+      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense} />
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
       {show.walls !== false && scene.surfaces.map((s) => (
         <group key={s.id}>
@@ -232,7 +247,7 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
         </group>
       ))}
       {selCell && <SelectedCell surface={selSurface} cell={selCell} />}
-      {show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} />}
+      {show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense && show.clean !== false ? 3 : 0} />}
       {show.cameras !== false && scene.cameras?.length > 0 && <Cameras cameras={scene.cameras} size={bounds.size} />}
       {show.nbv && rec && <NbvMarker rec={rec} size={bounds.size} />}
     </Canvas>

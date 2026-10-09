@@ -93,6 +93,7 @@ export default function SceneView({ data, scene, selection, onSelect }) {
 
         <span className="w-px h-5 bg-line mx-1" />
         <button className="toggle-chip" data-on={show.points} onClick={() => toggle('points')}><Sparkles size={13} />Points</button>
+        {scene.kind === 'rgbd' && <button className="toggle-chip" data-on={show.clean !== false} onClick={() => setShow((x) => ({ ...x, clean: x.clean === false }))} title="Hide points measured by only 2 frames (display only)">Hide noise</button>}
         {scene.surfaces?.length > 0 && (
           <button className="toggle-chip" data-on={show.walls} onClick={() => toggle('walls')}><Box size={13} />Room layout</button>
         )}
