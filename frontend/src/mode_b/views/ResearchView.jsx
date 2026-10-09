@@ -46,7 +46,6 @@ export default function ResearchView() {
   const d = (s, k) => valueOf(s, 'D', k)
   const rows = [
     ['Room shell covered (≤ 10 cm of the measured room)', 'completeness', fmtPct],
-    ['Wall-position error', 'wall_position_error_m', fmtM],
   ]
   return (
     <div className="h-full overflow-auto scrollbar-thin">
@@ -81,19 +80,6 @@ export default function ResearchView() {
           </section>
         )}
 
-        {seq && (
-          <section>
-            <div className="card-title mb-2">3 · What we learned</div>
-            <ul className="card p-4 space-y-2 text-[13px] text-ink-soft list-disc pl-8">
-              <li>Completing the unseen room raised coverage from {fmtPct(v(seq, 'A', 'completeness'))} to {fmtPct(v(seq, 'B', 'completeness'))},
-                but generated walls are only roughly placed (median {fmtM(v(seq, 'B', 'unseen_error_m'))} from the real walls) — which is why they are always shown as generated.</li>
-              <li>Footage chosen by NextBestView covered more of the room than the same amount of random footage ({fmtPct(v(seq, 'C', 'completeness'))} vs
-                {' '}{fmtPct(d(seq, 'completeness')?.v)} ± {fmtPct(d(seq, 'completeness')?.sd)} over {d(seq, 'completeness')?.n} random draws) on this room
-                {office ? `, with no measurable difference on a second room (${fmtPct(v(office, 'C', 'completeness'))} vs ${fmtPct(d(office, 'completeness')?.v)})` : ''} — promising, not conclusive.</li>
-              <li>Video alone has no real-world scale and few points on plain walls; the depth-sensor demo is shown separately and is not part of these results.</li>
-            </ul>
-          </section>
-        )}
       </div>
     </div>
   )
