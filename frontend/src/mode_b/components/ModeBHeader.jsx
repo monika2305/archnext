@@ -1,12 +1,9 @@
-import { Box, Download, Film, FlaskConical, LayoutGrid, Plus } from 'lucide-react'
+import { Box, FlaskConical, Plus } from 'lucide-react'
 
 // Mode B header: same structure and styling as the Mode A header (components/Header.jsx), its own tabs.
 export const MODE_B_TABS = [
-  { key: 'overview', label: 'Upload', icon: LayoutGrid, needs: null },
-  { key: 'reconstruction', label: 'Generate', icon: Film, needs: 'project' },
   { key: 'scene', label: '3D Room', icon: Box, needs: 'scene' },
-  { key: 'export', label: 'Export', icon: Download, needs: 'scene' },
-  { key: 'research', label: 'Research', icon: FlaskConical, needs: null, advanced: true },
+  { key: 'research', label: 'Research', icon: FlaskConical, needs: null },
 ]
 // VisionTrust / NextBestView pages are no longer in the navigation; their data now drives X-Ray Honesty and
 // "Show completed region" inside the 3D Room. (The algorithms and stored data are unchanged.)

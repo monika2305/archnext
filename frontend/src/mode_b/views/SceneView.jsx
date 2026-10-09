@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Database, Eye, Footprints, Orbit, RotateCcw, ScanEye, Sparkles, Video, Wand2 } from 'lucide-react'
+import { Database, Download, Eye, Footprints, Orbit, RotateCcw, ScanEye, Sparkles, Video, Wand2 } from 'lucide-react'
 import SceneViewer from '../components/SceneViewer.jsx'
 import { modeB } from '../api.js'
 import { completionStats } from '../lib/shell.js'
@@ -34,7 +34,7 @@ export default function SceneView({ data, scene }) {
   const [walk, setWalk] = useState(false)
   const [resetKey, setResetKey] = useState(0)
   const meshUrl = rgbd && scene.mesh ? `/api/mode-b/projects/${data.project.id}/mesh.glb?version=${scene.version}` : null
-  const hybrid = { xray, completed, showGaps: true, geometry: rgbd ? geometry : 'hybrid' }
+  const hybrid = { xray, completed, showGaps: xray, geometry: rgbd ? geometry : 'hybrid' }   // no outlines in Normal 3D
   const shellOn = !rgbd || geometry !== 'points'
   const hybridProp = shellOn && hasShell ? hybrid : null
 
@@ -70,6 +70,7 @@ export default function SceneView({ data, scene }) {
             <button data-active={walk} onClick={() => setWalk(true)} title="Drag to look, W A S D to move"><Footprints size={13} />Walk</button>
           </div>
           <button className="icon-btn" onClick={() => setResetKey((k) => k + 1)} title="Reset view"><RotateCcw size={15} /></button>
+          <a className="btn-secondary btn-sm" href={modeB.glbUrl(data.project.id, scene.version, 'all')} download title="Download the 3D scene as GLB"><Download size={14} />GLB</a>
         </div>
       </div>
 
@@ -92,7 +93,7 @@ export default function SceneView({ data, scene }) {
                   <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-[#ECE7DF] border border-line" />Room structure with evidence</div>
                   <div className="flex items-center gap-2"><Sparkles size={11} className="text-ink-mute" />{rgbd ? 'Measured furniture (depth sensor)' : 'Reconstructed points (video)'}</div>
                   {completed && <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: SW.generated }} />Generated completion</div>}
-                  {!completed && stats.available && <div className="flex items-center gap-2 text-[#7C3AED]"><span className="w-3 border-t border-dashed border-[#7C3AED]" />Missing region (never seen)</div>}
+                  {!completed && stats.available && <div className="flex items-center gap-2 text-ink-mute">{stats.gaps.length} unseen region{stats.gaps.length === 1 ? '' : 's'} left open</div>}
                 </>
               )}
             </div>

@@ -85,11 +85,18 @@ function SelectedCell({ surface, cell }) {
 // Display only (stored points are never changed): photo colours are sRGB, so they are converted to linear for
 // Three.js (otherwise they look washed out); for dense RGB-D clouds, cells measured by only 2 frames - mostly floating
 // fringe noise - are hidden unless minViews is lowered.
-function Points({ points, minViews = 0 }) {
+function Points({ points, minViews = 0, clip = null }) {
   const geometry = useMemo(() => {
     const keep = []
     const n = points.xyz.length / 3
-    for (let i = 0; i < n; i++) if (!minViews || !points.views || points.views[i] >= minViews) keep.push(i)
+    for (let i = 0; i < n; i++) {
+      if (minViews && points.views && points.views[i] < minViews) continue
+      if (clip) {                      // display only: floating points well outside the measured room are hidden
+        const x = points.xyz[3 * i], y = points.xyz[3 * i + 1], z = points.xyz[3 * i + 2]
+        if (x < clip.lo[0] || x > clip.hi[0] || y < clip.lo[1] || y > clip.hi[1] || z < clip.lo[2] || z > clip.hi[2]) continue
+      }
+      keep.push(i)
+    }
     const pos = new Float32Array(keep.length * 3)
     const col = new Float32Array(keep.length * 3)
     keep.forEach((i, k) => {
@@ -102,7 +109,7 @@ function Points({ points, minViews = 0 }) {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     g.setAttribute('color', new THREE.BufferAttribute(col, 3))
     return g
-  }, [points, minViews])
+  }, [points, minViews, clip])
   useEffect(() => () => geometry.dispose(), [geometry])
   return (
     <points geometry={geometry} raycast={() => null}>
@@ -179,7 +186,7 @@ function HybridShell({ surfaces, xray, completed, showGaps }) {
     return (
       <group key={s.id}>
         <CellMesh surface={s} classes={['observed']} color={xray ? XRAY.observed : base} opacity={xray ? 0.85 : 1} />
-        <CellMesh surface={s} classes={['uncertain']} color={xray ? XRAY.uncertain : base} opacity={xray ? 0.6 : 0.5} />
+        <CellMesh surface={s} classes={['uncertain']} color={xray ? XRAY.uncertain : base} opacity={xray ? 0.6 : 0.3} />
         {completed && <CellMesh key={`g-${s.id}`} surface={s} classes={['generated']} color={XRAY.generated} opacity={0.38} fade />}
         {!completed && showGaps && <GapOutline surface={s} />}
       </group>
@@ -305,6 +312,14 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
   const selSurface = selection && scene.surfaces.find((s) => s.id === selection.surface)
   const selCell = selSurface && selection.cell && selSurface.cells.find((c) => c.i === selection.cell.i && c.j === selection.cell.j)
   const startCam = scene.cameras?.[0]
+  // Measured room bounds (room-shell corners) + 25 cm: dense RGB-D points beyond them are hidden in the 3D Room view.
+  const shellClip = useMemo(() => {
+    if (!scene.surfaces?.length) return null
+    const lo = [Infinity, Infinity, Infinity]
+    const hi = [-Infinity, -Infinity, -Infinity]
+    for (const s of scene.surfaces) for (const c of s.corners) c.forEach((v, k) => { lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v) })
+    return { lo: lo.map((v) => v - 0.25), hi: hi.map((v) => v + 0.25) }
+  }, [scene.surfaces])
   return (
     <Canvas camera={{ fov: 50, position: [5, 5, 5] }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true }}
             onPointerMissed={(e) => { if (e.type === 'click') onSelect?.(null) }}>
@@ -316,7 +331,7 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
       {hybrid && <HybridShell surfaces={scene.surfaces} xray={hybrid.xray} completed={hybrid.completed} showGaps={hybrid.showGaps} />}
       {hybrid && hybrid.geometry === 'mesh' && meshUrl && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
-      {hybrid && hybrid.geometry !== 'mesh' && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense ? 3 : 0} />}
+      {hybrid && hybrid.geometry !== 'mesh' && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense ? 3 : 0} clip={scene.points?.dense ? shellClip : null} />}
       {!hybrid && rgbdView && meshUrl && rgbdView !== 'points' && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
       {!hybrid && rgbdView && rgbdView !== 'points' && rgbdView !== 'measured' && scene.surfaces.map((s) => (
         <Surface key={s.id} surface={s} mode={rgbdView === 'complete' ? 'generated' : 'complete'} selected={selection?.surface === s.id}
