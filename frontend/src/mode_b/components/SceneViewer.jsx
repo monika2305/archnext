@@ -85,9 +85,9 @@ function SelectedCell({ surface, cell }) {
 // Display only (stored points are never changed): photo colours are sRGB, so they are converted to linear for
 // Three.js (otherwise they look washed out); for dense RGB-D clouds, cells measured by only 2 frames - mostly floating
 // fringe noise - are hidden unless minViews is lowered.
-function Points({ points, minViews = 0, clip = null }) {
+function Points({ points, minViews = 0, clip = null, isolate = false }) {
   const geometry = useMemo(() => {
-    const keep = []
+    let keep = []
     const n = points.xyz.length / 3
     for (let i = 0; i < n; i++) {
       if (minViews && points.views && points.views[i] < minViews) continue
@@ -96,6 +96,12 @@ function Points({ points, minViews = 0, clip = null }) {
         if (x < clip.lo[0] || x > clip.hi[0] || y < clip.lo[1] || y > clip.hi[1] || z < clip.lo[2] || z > clip.hi[2]) continue
       }
       keep.push(i)
+    }
+    if (isolate) {                     // display only: drop isolated fragments (cells of 12 cm holding < 3 points)
+      const cell = new Map()
+      const key = (i) => `${Math.floor(points.xyz[3 * i] / 0.12)},${Math.floor(points.xyz[3 * i + 1] / 0.12)},${Math.floor(points.xyz[3 * i + 2] / 0.12)}`
+      for (const i of keep) { const k = key(i); cell.set(k, (cell.get(k) || 0) + 1) }
+      keep = keep.filter((i) => cell.get(key(i)) >= 3)
     }
     const pos = new Float32Array(keep.length * 3)
     const col = new Float32Array(keep.length * 3)
@@ -109,7 +115,7 @@ function Points({ points, minViews = 0, clip = null }) {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
     g.setAttribute('color', new THREE.BufferAttribute(col, 3))
     return g
-  }, [points, minViews, clip])
+  }, [points, minViews, clip, isolate])
   useEffect(() => () => geometry.dispose(), [geometry])
   return (
     <points geometry={geometry} raycast={() => null}>
@@ -186,7 +192,7 @@ function HybridShell({ surfaces, xray, completed, showGaps }) {
     return (
       <group key={s.id}>
         <CellMesh surface={s} classes={['observed']} color={xray ? XRAY.observed : base} opacity={xray ? 0.85 : 1} />
-        <CellMesh surface={s} classes={['uncertain']} color={xray ? XRAY.uncertain : base} opacity={xray ? 0.6 : 0.3} />
+        <CellMesh surface={s} classes={['uncertain']} color={xray ? XRAY.uncertain : base} opacity={xray ? 0.6 : s.kind === 'floor' ? 0.85 : 0.3} />
         {completed && <CellMesh key={`g-${s.id}`} surface={s} classes={['generated']} color={XRAY.generated} opacity={0.38} fade />}
         {!completed && showGaps && <GapOutline surface={s} />}
       </group>
@@ -248,7 +254,7 @@ function Rig({ bounds, resetKey, controls, walk, startCam, dense }) {
       return
     }
     // Elevated 3/4 architectural eye-level perspective looking gently into the room
-    const k = dense ? 0.72 : 1        // dense RGB-D clouds: frame the room more tightly
+    const k = dense ? 0.8 : 1         // dense RGB-D clouds: frame the room more tightly
     camera.position.set(cx + d * 0.65 * k, cy + d * 0.45 * k, cz + d * 0.65 * k)
     controls.current?.target.set(cx, cy, cz)
     controls.current?.update()
@@ -327,11 +333,11 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
       <ambientLight intensity={0.9} />
       <directionalLight position={[bounds.center[0] + bounds.size, bounds.center[1] + bounds.size * 1.8, bounds.center[2] + bounds.size]} intensity={0.65} />
       <directionalLight position={[bounds.center[0] - bounds.size, bounds.center[1] + bounds.size * 0.8, bounds.center[2] - bounds.size]} intensity={0.3} color="#F5EFE6" />
-      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense && !scene.mesh} />
+      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense} />
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
       {hybrid && <HybridShell surfaces={scene.surfaces} xray={hybrid.xray} completed={hybrid.completed} showGaps={hybrid.showGaps} />}
       {hybrid && hybrid.geometry === 'mesh' && meshUrl && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
-      {hybrid && hybrid.geometry !== 'mesh' && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense ? 3 : 0} clip={scene.points?.dense ? shellClip : null} />}
+      {hybrid && hybrid.geometry !== 'mesh' && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense ? 3 : 0} clip={scene.points?.dense ? shellClip : null} isolate={!!scene.points?.dense} />}
       {!hybrid && rgbdView && meshUrl && rgbdView !== 'points' && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
       {!hybrid && rgbdView && rgbdView !== 'points' && rgbdView !== 'measured' && scene.surfaces.map((s) => (
         <Surface key={s.id} surface={s} mode={rgbdView === 'complete' ? 'generated' : 'complete'} selected={selection?.surface === s.id}
