@@ -173,7 +173,7 @@ function CellMesh({ surface, classes, color, opacity, fade }) {
   return (
     <mesh ref={ref} geometry={geometry} raycast={() => null}>
       <meshStandardMaterial color={color} side={fade ? THREE.DoubleSide : THREE.FrontSide} transparent={opacity < 1 || fade} opacity={fade ? 0 : opacity}
-                            roughness={0.95} metalness={0} depthWrite={opacity >= 0.9} polygonOffset polygonOffsetFactor={1} />
+                            roughness={0.95} metalness={0} flatShading depthWrite={opacity >= 0.9} polygonOffset polygonOffsetFactor={1} />
     </mesh>
   )
 }
@@ -318,13 +318,14 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
   const selSurface = selection && scene.surfaces.find((s) => s.id === selection.surface)
   const selCell = selSurface && selection.cell && selSurface.cells.find((c) => c.i === selection.cell.i && c.j === selection.cell.j)
   const startCam = scene.cameras?.[0]
-  // Measured room bounds (room-shell corners) + 25 cm: dense RGB-D points beyond them are hidden in the 3D Room view.
+  // Measured room bounds (room-shell corners) + 10 cm: dense RGB-D points beyond the measured walls / floor (window
+  // reflections, outdoor geometry) are hidden in the 3D Room view (display only).
   const shellClip = useMemo(() => {
     if (!scene.surfaces?.length) return null
     const lo = [Infinity, Infinity, Infinity]
     const hi = [-Infinity, -Infinity, -Infinity]
     for (const s of scene.surfaces) for (const c of s.corners) c.forEach((v, k) => { lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v) })
-    return { lo: lo.map((v) => v - 0.25), hi: hi.map((v) => v + 0.25) }
+    return { lo: lo.map((v) => v - 0.1), hi: hi.map((v) => v + 0.1) }
   }, [scene.surfaces])
   return (
     <Canvas camera={{ fov: 50, position: [5, 5, 5] }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true }}
