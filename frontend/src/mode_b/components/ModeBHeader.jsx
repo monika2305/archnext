@@ -14,7 +14,7 @@ export const MODE_B_TABS = [
 export function tabEnabled(tab, { project, scene }) {
   if (tab.needs === 'project') return !!project
   if (tab.needs === 'scene') return !!scene
-  if (tab.needs === 'analysis') return !!scene && scene.kind !== 'rgbd'
+  if (tab.needs === 'analysis') return !!scene
   return true
 }
 

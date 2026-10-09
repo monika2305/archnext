@@ -6,6 +6,7 @@ import ReconstructionView from './views/ReconstructionView.jsx'
 import { modeB } from './api.js'
 import { isActive } from './lib/status.js'
 import { readLocation, writeLocation } from './lib/route.js'
+import { RgbdNextBestView, RgbdVisionTrust } from './views/RgbdTrustViews.jsx'
 
 const SceneView = lazy(() => import('./views/SceneView.jsx'))
 const VisionTrustView = lazy(() => import('./views/VisionTrustView.jsx'))
@@ -114,8 +115,8 @@ export default function ModeBApp() {
                                 onScene={() => setView('scene')} />
           )}
           {shown === 'scene' && scene && <SceneView {...viewProps} />}
-          {shown === 'visiontrust' && scene && <VisionTrustView {...viewProps} onScene={() => setView('scene')} />}
-          {shown === 'nbv' && scene && <NextBestViewView {...viewProps} onExtend={extend} busy={isActive(data?.status)} />}
+          {shown === 'visiontrust' && scene && (scene.kind === 'rgbd' ? <RgbdVisionTrust scene={scene} /> : <VisionTrustView {...viewProps} onScene={() => setView('scene')} />)}
+          {shown === 'nbv' && scene && (scene.kind === 'rgbd' ? <RgbdNextBestView scene={scene} /> : <NextBestViewView {...viewProps} onExtend={extend} busy={isActive(data?.status)} />)}
           {shown === 'research' && <ResearchView />}
           {shown === 'export' && scene && <ExportView {...viewProps} />}
         </Suspense>
