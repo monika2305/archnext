@@ -105,3 +105,14 @@ test('research table shows stored values only; missing values are N/A with the r
   assert.ok(Math.abs(nbvEffect(seq, 'completeness').diff - 0.05) < 1e-12)
   assert.equal(valueOf({ configs: { C: { success: false, metrics: { completeness: 1 } } } }, 'C', 'completeness'), null)
 })
+
+test('completion stats: area-weighted, gaps are connected generated regions, generated never counted as evidence', async () => {
+  const { completionStats, gapRegions, cellTriangles } = await import('../src/mode_b/lib/shell.js')
+  const s = { id: 'wall-z-', normal: [0, 0, 1], grid: [3, 1], corners: [[0, 0, 0], [3, 0, 0], [3, 1, 0], [0, 1, 0]],
+    cells: [{ i: 0, j: 0, cls: 'observed', area: 1 }, { i: 1, j: 0, cls: 'generated', area: 1 }, { i: 2, j: 0, cls: 'generated', area: 1 }] }
+  const st = completionStats([s])
+  assert.equal(gapRegions(s).length, 1)                     // two adjacent generated cells = one gap
+  assert.ok(Math.abs(st.before - 1 / 3) < 1e-9 && Math.abs(st.generatedShare - 2 / 3) < 1e-9 && st.available)
+  assert.equal(cellTriangles(s, ['generated']).length, 2 * 2 * 3 * 3)
+  assert.equal(completionStats([{ ...s, cells: [s.cells[0]] }]).available, false)
+})

@@ -1,15 +1,15 @@
-import { Box, Camera, Download, Film, FlaskConical, LayoutGrid, Plus, ShieldCheck } from 'lucide-react'
+import { Box, Download, Film, FlaskConical, LayoutGrid, Plus } from 'lucide-react'
 
 // Mode B header: same structure and styling as the Mode A header (components/Header.jsx), its own tabs.
 export const MODE_B_TABS = [
-  { key: 'overview', label: '1 Upload', icon: LayoutGrid, needs: null },
-  { key: 'reconstruction', label: '2 Generate 3D', icon: Film, needs: 'project' },
-  { key: 'scene', label: '3 Explore room', icon: Box, needs: 'scene' },
-  { key: 'export', label: '4 Export', icon: Download, needs: 'scene' },
-  { key: 'visiontrust', label: 'VisionTrust', icon: ShieldCheck, needs: 'analysis', advanced: true },
-  { key: 'nbv', label: 'NextBestView', icon: Camera, needs: 'analysis', advanced: true },
+  { key: 'overview', label: 'Upload', icon: LayoutGrid, needs: null },
+  { key: 'reconstruction', label: 'Generate', icon: Film, needs: 'project' },
+  { key: 'scene', label: '3D Room', icon: Box, needs: 'scene' },
+  { key: 'export', label: 'Export', icon: Download, needs: 'scene' },
   { key: 'research', label: 'Research', icon: FlaskConical, needs: null, advanced: true },
 ]
+// VisionTrust / NextBestView pages are no longer in the navigation; their data now drives X-Ray Honesty and
+// "Show completed region" inside the 3D Room. (The algorithms and stored data are unchanged.)
 
 export function tabEnabled(tab, { project, scene }) {
   if (tab.needs === 'project') return !!project

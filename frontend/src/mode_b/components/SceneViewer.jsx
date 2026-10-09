@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Line, OrbitControls, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 import { cellCorners, sceneBounds, surfaceArrays } from '../lib/sceneGeometry.js'
+import { cellTriangles, gapRegions } from '../lib/shell.js'
 
 // Mode B 3D viewer: room surfaces coloured by VisionTrust class or GeometryTrust confidence, the reconstructed
 // points, the recorded camera path and the NextBestView marker. Independent of Mode A's viewer.
@@ -136,6 +137,56 @@ function MeasuredMesh({ url }) {
   return <primitive object={obj} />
 }
 
+// 3D Room: the room shell drawn from its VisionTrust cells. Normal 3D = neutral architecture (observed solid,
+// uncertain lighter); X-Ray Honesty = class colours. Generated cells exist only after "Show completed region" and are
+// always violet and translucent; before it, the gaps they fill are outlined.
+const NORMAL = { floor: '#D6CFC2', ceiling: '#EEEBE6', wall: '#ECE7DF' }
+const XRAY = { observed: '#10B981', uncertain: '#F59E0B', generated: '#8B5CF6' }
+
+function CellMesh({ surface, classes, color, opacity, fade }) {
+  const ref = useRef()
+  const geometry = useMemo(() => {
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.BufferAttribute(cellTriangles(surface, classes), 3))
+    g.computeVertexNormals()
+    return g
+  }, [surface, classes])
+  useEffect(() => () => geometry.dispose(), [geometry])
+  useFrame((_, dt) => {                       // gentle fade-in when completed geometry is revealed
+    const m = ref.current?.material
+    if (m && fade && m.opacity < opacity) m.opacity = Math.min(opacity, m.opacity + dt * 1.2)
+  })
+  if (!geometry.attributes.position.count) return null
+  return (
+    <mesh ref={ref} geometry={geometry} raycast={() => null}>
+      <meshStandardMaterial color={color} side={fade ? THREE.DoubleSide : THREE.FrontSide} transparent={opacity < 1 || fade} opacity={fade ? 0 : opacity}
+                            roughness={0.95} metalness={0} depthWrite={opacity >= 0.9} polygonOffset polygonOffsetFactor={1} />
+    </mesh>
+  )
+}
+
+function GapOutline({ surface }) {
+  const lines = useMemo(() => gapRegions(surface).flatMap((r) => r.cells.map((c) => {
+    const q = cellCorners(surface, c)
+    return { key: `${c.i}-${c.j}`, pts: [...q, q[0]] }
+  })), [surface])
+  return lines.map((l) => <Line key={l.key} points={l.pts} color="#7C3AED" lineWidth={1.2} dashed dashSize={0.12} gapSize={0.08} raycast={() => null} />)
+}
+
+function HybridShell({ surfaces, xray, completed, showGaps }) {
+  return surfaces.map((s) => {
+    const base = NORMAL[s.kind] || NORMAL.wall
+    return (
+      <group key={s.id}>
+        <CellMesh surface={s} classes={['observed']} color={xray ? XRAY.observed : base} opacity={xray ? 0.85 : 1} />
+        <CellMesh surface={s} classes={['uncertain']} color={xray ? XRAY.uncertain : base} opacity={xray ? 0.6 : 0.5} />
+        {completed && <CellMesh key={`g-${s.id}`} surface={s} classes={['generated']} color={XRAY.generated} opacity={0.38} fade />}
+        {!completed && showGaps && <GapOutline surface={s} />}
+      </group>
+    )
+  })
+}
+
 function Cameras({ cameras, size }) {
   const path = cameras.map((c) => c.center)
   const s = size * 0.025
@@ -247,7 +298,7 @@ function Walk({ bounds, box }) {
   return null
 }
 
-export default function SceneViewer({ scene, mode = 'clean', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0, rgbdView = null, meshUrl = null }) {
+export default function SceneViewer({ scene, mode = 'clean', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0, rgbdView = null, meshUrl = null, hybrid = null }) {
   const bounds = useMemo(() => sceneBounds(scene), [scene])
   const controls = useRef()
   const rec = scene.nbv?.recommendations?.find((r) => r.rank === nbvRank)
@@ -263,12 +314,15 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
       <directionalLight position={[bounds.center[0] - bounds.size, bounds.center[1] + bounds.size * 0.8, bounds.center[2] - bounds.size]} intensity={0.3} color="#F5EFE6" />
       <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense && !scene.mesh} />
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
-      {rgbdView && meshUrl && rgbdView !== 'points' && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
-      {rgbdView && rgbdView !== 'points' && rgbdView !== 'measured' && scene.surfaces.map((s) => (
+      {hybrid && <HybridShell surfaces={scene.surfaces} xray={hybrid.xray} completed={hybrid.completed} showGaps={hybrid.showGaps} />}
+      {hybrid && hybrid.geometry === 'mesh' && meshUrl && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
+      {hybrid && hybrid.geometry !== 'mesh' && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense ? 3 : 0} />}
+      {!hybrid && rgbdView && meshUrl && rgbdView !== 'points' && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
+      {!hybrid && rgbdView && rgbdView !== 'points' && rgbdView !== 'measured' && scene.surfaces.map((s) => (
         <Surface key={s.id} surface={s} mode={rgbdView === 'complete' ? 'generated' : 'complete'} selected={selection?.surface === s.id}
                  onPick={(surface, cell) => onSelect?.({ surface, cell: cell ? { i: cell.i, j: cell.j } : null })} />
       ))}
-      {!rgbdView && show.walls !== false && scene.surfaces.map((s) => (
+      {!hybrid && !rgbdView && show.walls !== false && scene.surfaces.map((s) => (
         <group key={s.id}>
           <Surface surface={s} mode={mode} selected={selection?.surface === s.id}
                    onPick={(surface, cell) => onSelect?.({ surface, cell: cell ? { i: cell.i, j: cell.j } : null })} />
@@ -277,7 +331,7 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
         </group>
       ))}
       {selCell && <SelectedCell surface={selSurface} cell={selCell} />}
-      {(!rgbdView || rgbdView === 'points') && show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense && show.clean !== false ? 3 : 0} />}
+      {!hybrid && (!rgbdView || rgbdView === 'points') && show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense && show.clean !== false ? 3 : 0} />}
       {show.cameras !== false && scene.cameras?.length > 0 && <Cameras cameras={scene.cameras} size={bounds.size} />}
       {show.nbv && rec && <NbvMarker rec={rec} size={bounds.size} />}
     </Canvas>

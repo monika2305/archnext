@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react'
-import { Box, Camera, Database, Footprints, Grid3x3, Orbit, RotateCcw, ShieldCheck, Sparkles, SplitSquareHorizontal } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Database, Eye, Footprints, Orbit, RotateCcw, ScanEye, Sparkles, Video, Wand2 } from 'lucide-react'
 import SceneViewer from '../components/SceneViewer.jsx'
-import EvidencePanel, { ClassBar, Legend } from '../components/EvidencePanel.jsx'
 import { modeB } from '../api.js'
-import { DISPLAY_MODES } from '../lib/trust.js'
+import { completionStats } from '../lib/shell.js'
+
+// 3D Room: the reconstruction is the hero. Two lightweight controls: X-Ray Honesty and Show Completed Region.
 
 function InputFrames({ data }) {
   const m = data.manifests?.frames
   if (!m?.keyframes?.length) return null
-  const pick = m.keyframes.filter((_, k) => k % Math.max(1, Math.round(m.keyframes.length / 8)) === 0).slice(0, 8)
+  const pick = m.keyframes.filter((_, k) => k % Math.max(1, Math.round(m.keyframes.length / 6)) === 0).slice(0, 6)
   return (
     <div>
       <div className="label mb-1.5">Input frames</div>
@@ -20,178 +21,101 @@ function InputFrames({ data }) {
   )
 }
 
-export default function SceneView({ data, scene, selection, onSelect }) {
-  const [evidenceView, setEvidenceView] = useState(false)
-  const [evidenceMode, setEvidenceMode] = useState('complete')
-  const [show, setShow] = useState({ points: true, walls: true, cameras: false, grid: false, nbv: false })
+const pct = (v) => `${Math.round(100 * v)}%`
+const SW = { observed: '#10B981', uncertain: '#F59E0B', generated: '#8B5CF6' }
+
+export default function SceneView({ data, scene }) {
+  const rgbd = scene.kind === 'rgbd'
+  const hasShell = (scene.surfaces?.length || 0) > 0
+  const stats = useMemo(() => completionStats(scene.surfaces), [scene.surfaces])
+  const [xray, setXray] = useState(false)
+  const [completed, setCompleted] = useState(false)
+  const [geometry, setGeometry] = useState('hybrid')          // RGB-D: hybrid (points + shell) | points | mesh
   const [walk, setWalk] = useState(false)
-  // RGB-D demo with a measured mesh: Complete room (mesh + generated shell cells) / Measured only / Evidence / Points
-  const [rgbdView, setRgbdView] = useState(scene.kind === 'rgbd' && scene.mesh ? 'complete' : null)
-  const meshUrl = scene.kind === 'rgbd' && scene.mesh ? `/api/mode-b/projects/${data.project.id}/mesh.glb?version=${scene.version}` : null
   const [resetKey, setResetKey] = useState(0)
-  const [compare, setCompare] = useState(null)       // earlier version's scene for before/after
-  const versions = data.project.versions.map((v) => v.version).filter((v) => v !== scene.version)
-  const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }))
-
-  const effectiveMode = scene.kind === 'rgbd' ? 'clean' : (evidenceView ? evidenceMode : 'clean')
-
-  useEffect(() => { setCompare(null) }, [scene.version])
-  const openCompare = async (v) => setCompare(v ? await modeB.scene(data.project.id, v) : null)
-
-  const viewer = (sc, label) => (
-    <div className="relative h-full min-h-0 rounded-2xl overflow-hidden border border-line bg-white">
-      {label && <div className="absolute top-2 left-2 z-10 glass rounded-lg px-2.5 h-7 flex items-center text-[12px] font-medium">{label}</div>}
-      <SceneViewer scene={sc} mode={effectiveMode} show={show} selection={selection} onSelect={onSelect} walk={walk} resetKey={resetKey}
-                   rgbdView={sc === scene && sc.mesh ? rgbdView : null} meshUrl={sc === scene ? meshUrl : null} />
-      {label && sc.summary && <div className="absolute bottom-2 left-2 right-2 z-10 glass rounded-lg px-2.5 py-1.5"><ClassBar shares={sc.summary.shares} /></div>}
-    </div>
-  )
+  const meshUrl = rgbd && scene.mesh ? `/api/mode-b/projects/${data.project.id}/mesh.glb?version=${scene.version}` : null
+  const hybrid = { xray, completed, showGaps: true, geometry: rgbd ? geometry : 'hybrid' }
+  const shellOn = !rgbd || geometry !== 'points'
+  const hybridProp = shellOn && hasShell ? hybrid : null
 
   return (
     <div className="h-full p-4 flex flex-col gap-3 min-h-0">
       <div className="card px-2 py-1.5 flex items-center gap-1.5 flex-wrap">
-        {scene.kind !== 'rgbd' && (
-          <div className="seg" role="group" aria-label="Viewer style">
-            <button
-              data-active={!evidenceView}
-              onClick={() => {
-                setEvidenceView(false)
-                setShow((s) => ({ ...s, grid: false, cameras: false, nbv: false }))
-              }}
-              title="Clean architectural 3D view without completion debug overlays"
-            >
-              <Box size={13} />Clean 3D
+        <span className={`chip ${rgbd ? 'bg-accent-soft text-accent-dark' : 'bg-ok/10 text-ok'}`} data-testid="source-label">
+          {rgbd ? <><Database size={12} />RGB-D sensor demo — depth camera + recorded poses</> : <><Video size={12} />Ordinary video (video-only reconstruction)</>}
+        </span>
+        {hasShell && (
+          <>
+            <span className="w-px h-5 bg-line mx-1" />
+            <div className="seg" role="group" aria-label="Honesty view">
+              <button data-active={!xray} onClick={() => setXray(false)}><Eye size={13} />Normal 3D</button>
+              <button data-active={xray} onClick={() => setXray(true)}><ScanEye size={13} />X-Ray Honesty</button>
+            </div>
+            <button className={completed ? 'btn-secondary btn-sm' : 'btn-primary btn-sm'} disabled={!stats.available}
+                    title={stats.available ? 'Reveal the precomputed structural completion (generated geometry)' : 'No unseen structural region to complete'}
+                    onClick={() => setCompleted((v) => !v)}>
+              <Wand2 size={14} />{completed ? 'Back to before' : 'Show completed region'}
             </button>
-            <button
-              data-active={evidenceView}
-              onClick={() => {
-                setEvidenceView(true)
-                setShow((s) => ({ ...s, grid: true }))
-              }}
-              title="Inspect VisionTrust observed, uncertain and generated regions"
-            >
-              <ShieldCheck size={13} />Evidence View
-            </button>
+          </>
+        )}
+        {rgbd && (
+          <div className="seg" role="group" aria-label="Geometry">
+            {[['hybrid', 'Hybrid room'], ['points', 'Points'], ...(scene.mesh ? [['mesh', 'Mesh (experimental)']] : [])].map(([k, l]) => (
+              <button key={k} data-active={geometry === k} onClick={() => setGeometry(k)}>{l}</button>))}
           </div>
         )}
-
-        {evidenceView && scene.kind !== 'rgbd' && (
-          <div className="seg ml-1" role="group" aria-label="Evidence Display">
-            {DISPLAY_MODES.map((m) => (
-              <button
-                key={m.key}
-                data-active={evidenceMode === m.key}
-                onClick={() => setEvidenceMode(m.key)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {scene.kind === 'rgbd' && scene.mesh && (
-          <div className="seg" role="group" aria-label="RGB-D display">
-            {[['complete', 'Complete room'], ['measured', 'Measured only'], ['evidence', 'Evidence view'], ['points', 'Points']].map(([k, l]) => (
-              <button key={k} data-active={rgbdView === k} onClick={() => setRgbdView(k)}>{l}</button>))}
-          </div>
-        )}
-        {scene.kind === 'rgbd' && (
-          <span className="chip bg-accent-soft text-accent-dark ml-1">
-            <Database size={12} />RGB-D sensor demo — depth camera + recorded poses, not video-only
-          </span>
-        )}
-
-        <span className="w-px h-5 bg-line mx-1" />
-        <button className="toggle-chip" data-on={show.points} onClick={() => toggle('points')}><Sparkles size={13} />Points</button>
-        {scene.kind === 'rgbd' && (!scene.mesh || rgbdView === 'points') && <button className="toggle-chip" data-on={show.clean !== false} onClick={() => setShow((x) => ({ ...x, clean: x.clean === false }))} title="Hide points measured by only 2 frames (display only)">Hide noise</button>}
-        {scene.surfaces?.length > 0 && scene.kind !== 'rgbd' && (
-          <button className="toggle-chip" data-on={show.walls} onClick={() => toggle('walls')}><Box size={13} />Room layout</button>
-        )}
-        <button className="toggle-chip" data-on={show.cameras} onClick={() => toggle('cameras')}><Camera size={13} />Camera path</button>
-        {evidenceView && (
-          <button className="toggle-chip" data-on={show.grid} onClick={() => toggle('grid')}><Grid3x3 size={13} />Cells</button>
-        )}
-        {scene.nbv?.recommendations?.length > 0 && (
-          <button className="toggle-chip" data-on={show.nbv} onClick={() => toggle('nbv')}><Camera size={13} />NextBestView</button>
-        )}
-
         <div className="ml-auto flex items-center gap-1.5">
           <div className="seg">
             <button data-active={!walk} onClick={() => setWalk(false)}><Orbit size={13} />Orbit</button>
             <button data-active={walk} onClick={() => setWalk(true)} title="Drag to look, W A S D to move"><Footprints size={13} />Walk</button>
           </div>
-          <button className="icon-btn" onClick={() => setResetKey((k) => k + 1)} title="Reset camera"><RotateCcw size={15} /></button>
-          {versions.length > 0 && (
-            <label className="flex items-center gap-1.5 text-[12px] text-ink-soft"><SplitSquareHorizontal size={14} />
-              <select className="input h-8 text-[12px]" value={compare?.version ?? ''} onChange={(e) => openCompare(e.target.value ? Number(e.target.value) : null)}>
-                <option value="">No comparison</option>
-                {versions.map((v) => <option key={v} value={v}>Compare with version {v}</option>)}
-              </select>
-            </label>
-          )}
+          <button className="icon-btn" onClick={() => setResetKey((k) => k + 1)} title="Reset view"><RotateCcw size={15} /></button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 grid gap-3 lg:grid-cols-[1fr_320px]">
-        <div className={`min-h-[320px] grid gap-3 ${compare ? 'md:grid-cols-2' : ''}`}>
-          {compare && viewer(compare, `Before · version ${compare.version}`)}
-          {viewer(scene, compare ? `After · version ${scene.version}` : null)}
-        </div>
-        <aside className="card p-4 overflow-auto scrollbar-thin space-y-4 min-h-0">
-          {scene.kind === 'rgbd' ? (
-            <div className="space-y-2 text-[12.5px]" data-testid="rgbd-source">
-              <div className="chip bg-accent-soft text-accent-dark"><Database size={12} />RGB-D sensor demo</div>
-              <p className="text-ink-soft">{scene.source.note}</p>
-              {scene.mesh && (
-                <div className="space-y-1 text-[12px]" data-testid="rgbd-legend">
-                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-amber-200 to-slate-400" />Measured surface: {scene.mesh.triangles.toLocaleString()} triangles from {scene.mesh.frames} depth frames</div>
-                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-[#8B5CF6]" />Generated: room shell where no frame saw the room (Complete room)</div>
-                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-[#10B981]" /><span className="w-2.5 h-2.5 rounded-sm bg-[#F59E0B]" />Evidence view: observed / uncertain shell cells</div>
-                </div>
-              )}
-              <div className="text-ink-mute">{scene.method.dense}. Depth: {scene.source.depth}; poses: {scene.source.poses}. Units: metres.</div>
-              <div className="text-ink-mute">{scene.diagnostics.points_kept.toLocaleString()} points · room extent {scene.diagnostics.extent_m.join(' × ')} m</div>
-            </div>
-          ) : (
-            <>
-              {!evidenceView ? (
-                <div className="space-y-3 text-[12.5px]">
-                  <div className="card-title flex items-center gap-1.5">
-                    <Box size={14} className="text-accent" />Reconstructed Room
-                  </div>
-                  <p className="text-ink-soft">
-                    Reconstructed from video footage. Clean 3D view displays the room boundaries and 3D points without debug overlays.
-                  </p>
-                  <div className="p-2.5 rounded-lg bg-paper border border-line space-y-1.5 text-[12px]">
-                    <div className="flex justify-between text-ink-soft">
-                      <span>Room surfaces</span>
-                      <span className="font-semibold text-ink">{scene.surfaces?.length || 0} (floor, walls, ceiling)</span>
-                    </div>
-                    <div className="flex justify-between text-ink-soft">
-                      <span>Reconstructed points</span>
-                      <span className="font-semibold text-ink">{((scene.points?.xyz?.length || 0) / 3).toLocaleString()}</span>
-                    </div>
-                    {scene.cameras?.length > 0 && (
-                      <div className="flex justify-between text-ink-soft">
-                        <span>Posed keyframes</span>
-                        <span className="font-semibold text-ink">{scene.cameras.length}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="text-[11.5px] text-ink-mute">
-                    Switch to <button onClick={() => { setEvidenceView(true); setShow((s) => ({ ...s, grid: true })); }} className="text-accent hover:underline font-medium cursor-pointer">Evidence View</button> to inspect VisionTrust cell classifications and confidence heatmap.
-                  </div>
-                </div>
+      <div className="flex-1 min-h-0 grid gap-3 lg:grid-cols-[1fr_260px]">
+        <div className="relative min-h-[320px] rounded-2xl overflow-hidden border border-line" style={{ background: '#EFECE6' }}>
+          <SceneViewer scene={scene} show={{ cameras: false, grid: false, nbv: false, points: true }} walk={walk} resetKey={resetKey}
+                       hybrid={hybridProp} meshUrl={meshUrl} rgbdView={null} />
+
+          {hybridProp && (
+            <div className="absolute left-3 bottom-3 glass rounded-xl px-3 py-2 text-[12px] space-y-1 max-w-[290px]" data-testid="legend">
+              {xray ? (
+                <>
+                  {['observed', 'uncertain', ...(completed ? ['generated'] : [])].map((k) => (
+                    <div key={k} className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: SW[k] }} />
+                      <span className="capitalize">{k}</span><span className="ml-auto tabular-nums text-ink-soft">{pct(stats.shares[k])}</span></div>))}
+                  <div className="text-[11px] text-ink-mute pt-0.5">Share of room-shell area{rgbd ? '; furniture points are all measured' : ''}</div>
+                </>
               ) : (
                 <>
-                  <Legend mode={evidenceMode} />
-                  <EvidencePanel scene={scene} projectId={data.project.id} selection={selection} scale={data.project.scale} />
+                  <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm bg-[#ECE7DF] border border-line" />Room structure with evidence</div>
+                  <div className="flex items-center gap-2"><Sparkles size={11} className="text-ink-mute" />{rgbd ? 'Measured furniture (depth sensor)' : 'Reconstructed points (video)'}</div>
+                  {completed && <div className="flex items-center gap-2"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: SW.generated }} />Generated completion</div>}
+                  {!completed && stats.available && <div className="flex items-center gap-2 text-[#7C3AED]"><span className="w-3 border-t border-dashed border-[#7C3AED]" />Missing region (never seen)</div>}
                 </>
               )}
-            </>
+            </div>
           )}
+
+          {hybridProp && stats.available && (
+            <div className="absolute right-3 top-3 glass rounded-xl px-3 py-2 text-[12px] w-[230px]" data-testid="completion-card">
+              <div className="flex items-center gap-1.5 font-medium mb-1"><Wand2 size={13} className="text-[#7C3AED]" />{completed ? 'After completion' : 'Before completion'}</div>
+              <div className="flex justify-between"><span className="text-ink-soft">Room shell with evidence</span><span className="tabular-nums">{pct(stats.before)}</span></div>
+              <div className="flex justify-between"><span className="text-ink-soft">Unseen gaps {completed ? 'completed' : 'open'}</span><span className="tabular-nums">{stats.gaps.length}</span></div>
+              {completed && <div className="text-[11px] text-ink-mute mt-1">{pct(stats.generatedShare)} of the shell is generated (planar walls / floor / ceiling extended to their intersections) — not observed.</div>}
+            </div>
+          )}
+          {walk && <div className="absolute right-3 bottom-3 glass rounded-lg px-2.5 py-1.5 text-[11.5px] text-ink-soft">Drag to look · W A S D to move</div>}
+        </div>
+
+        <aside className="card p-3.5 overflow-auto scrollbar-thin space-y-3 min-h-0 text-[12.5px]">
+          <div className="text-ink-soft leading-snug">
+            {rgbd ? 'Built from the TUM dataset\'s depth-sensor images and recorded camera poses. Not video-only reconstruction.'
+              : 'Built from ordinary video only: camera poses and 3D points estimated by COLMAP; room structure fitted to them.'}
+          </div>
+          {!hasShell && <div className="text-ink-mute">No room structure was estimated for this reconstruction; only measured points are shown.</div>}
           <InputFrames data={data} />
-          {walk && <p className="text-[11.5px] text-ink-mute">Walk mode: drag to look around, W A S D or arrow keys to move.</p>}
         </aside>
       </div>
     </div>
