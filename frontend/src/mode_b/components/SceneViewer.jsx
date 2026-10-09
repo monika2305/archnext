@@ -8,24 +8,61 @@ import { cellCorners, sceneBounds, surfaceArrays } from '../lib/sceneGeometry.js
 // points, the recorded camera path and the NextBestView marker. Independent of Mode A's viewer.
 
 function Surface({ surface, mode, selected, onPick }) {
+  const isClean = mode === 'clean'
   const { geometry, triCell } = useMemo(() => {
-    const a = surfaceArrays(surface, mode)
+    const a = surfaceArrays(surface, isClean ? 'complete' : mode)
     const g = new THREE.BufferGeometry()
     g.setAttribute('position', new THREE.BufferAttribute(a.positions, 3))
-    g.setAttribute('color', new THREE.BufferAttribute(a.colors, 3))
+    if (!isClean) {
+      g.setAttribute('color', new THREE.BufferAttribute(a.colors, 3))
+    }
     g.computeVertexNormals()
     return { geometry: g, triCell: a.triCell }
-  }, [surface, mode])
+  }, [surface, mode, isClean])
   useEffect(() => () => geometry.dispose(), [geometry])
-  const generatedLook = mode === 'generated'
+
+  let materialProps = {
+    side: THREE.FrontSide,
+    transparent: true,
+    opacity: 0.88,
+    roughness: 0.85,
+    metalness: 0.02,
+    emissive: selected ? '#22d3ee' : '#000000',
+    emissiveIntensity: selected ? 0.22 : 0,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+  }
+
+  if (isClean) {
+    if (surface.kind === 'floor') {
+      materialProps = { ...materialProps, color: '#DDD7CD', opacity: 0.95, roughness: 0.75 }
+    } else if (surface.kind === 'ceiling') {
+      materialProps = { ...materialProps, color: '#F3EFE6', opacity: 0.25, roughness: 0.9 }
+    } else {
+      materialProps = { ...materialProps, color: '#EDE8E0', opacity: 0.88, roughness: 0.85 }
+    }
+  } else {
+    materialProps = {
+      ...materialProps,
+      vertexColors: true,
+      opacity: mode === 'generated' ? 0.75 : 0.88,
+    }
+  }
+
   return (
     <mesh geometry={geometry} userData={{ surface: surface.id }}
           onClick={(e) => { if (e.delta > 4) return; e.stopPropagation(); onPick?.(surface.id, surface.cells[triCell[e.faceIndex]]) }}>
-      <meshStandardMaterial vertexColors side={THREE.FrontSide} transparent opacity={generatedLook ? 0.75 : 0.88}
-                            roughness={0.85} metalness={0} emissive={selected ? '#22d3ee' : '#000000'}
-                            emissiveIntensity={selected ? 0.18 : 0} polygonOffset polygonOffsetFactor={1} />
+      <meshStandardMaterial {...materialProps} />
     </mesh>
   )
+}
+
+function SurfaceOutline({ surface }) {
+  const pts = useMemo(() => {
+    const c = surface.corners
+    return [c[0], c[1], c[2], c[3], c[0]]
+  }, [surface])
+  return <Line points={pts} color="#B8B1A4" lineWidth={1} transparent opacity={0.5} raycast={() => null} />
 }
 
 function CellGrid({ surface, mode }) {
@@ -55,7 +92,7 @@ function Points({ points }) {
   return (
     <points geometry={geometry} raycast={() => null}>
       {points.dense ? <pointsMaterial size={points.size * 1.5} sizeAttenuation vertexColors />
-        : <pointsMaterial size={2} sizeAttenuation={false} vertexColors />}
+        : <pointsMaterial size={3.5} sizeAttenuation={false} vertexColors />}
     </points>
   )
 }
@@ -113,7 +150,8 @@ function Rig({ bounds, resetKey, controls, walk, startCam }) {
       camera.lookAt(...startCam.center.map((v, k) => v + startCam.forward[k]))
       return
     }
-    camera.position.set(cx + d * 0.55, cy + d * 0.85, cz + d * 0.75)
+    // Elevated 3/4 architectural eye-level perspective looking gently into the room
+    camera.position.set(cx + d * 0.65, cy + d * 0.45, cz + d * 0.65)
     controls.current?.target.set(cx, cy, cz)
     controls.current?.update()
   }, [bounds, resetKey, camera, controls, walk, startCam])
@@ -169,7 +207,7 @@ function Walk({ bounds, box }) {
   return null
 }
 
-export default function SceneViewer({ scene, mode = 'complete', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0 }) {
+export default function SceneViewer({ scene, mode = 'clean', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0 }) {
   const bounds = useMemo(() => sceneBounds(scene), [scene])
   const controls = useRef()
   const rec = scene.nbv?.recommendations?.find((r) => r.rank === nbvRank)
@@ -179,16 +217,18 @@ export default function SceneViewer({ scene, mode = 'complete', show = {}, selec
   return (
     <Canvas camera={{ fov: 50, position: [5, 5, 5] }} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true }}
             onPointerMissed={(e) => { if (e.type === 'click') onSelect?.(null) }}>
-      <color attach="background" args={['#FBFAF8']} />
-      <ambientLight intensity={0.85} />
-      <directionalLight position={[bounds.center[0] + bounds.size, bounds.center[1] + bounds.size * 2, bounds.center[2] + bounds.size]} intensity={0.6} />
+      <color attach="background" args={['#F9F8F6']} />
+      <ambientLight intensity={0.9} />
+      <directionalLight position={[bounds.center[0] + bounds.size, bounds.center[1] + bounds.size * 1.8, bounds.center[2] + bounds.size]} intensity={0.65} />
+      <directionalLight position={[bounds.center[0] - bounds.size, bounds.center[1] + bounds.size * 0.8, bounds.center[2] - bounds.size]} intensity={0.3} color="#F5EFE6" />
       <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} />
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
-      {scene.surfaces.map((s) => (
+      {show.walls !== false && scene.surfaces.map((s) => (
         <group key={s.id}>
           <Surface surface={s} mode={mode} selected={selection?.surface === s.id}
                    onPick={(surface, cell) => onSelect?.({ surface, cell: cell ? { i: cell.i, j: cell.j } : null })} />
-          {show.grid !== false && <CellGrid surface={s} mode={mode} />}
+          {mode === 'clean' && <SurfaceOutline surface={s} />}
+          {mode !== 'clean' && show.grid !== false && <CellGrid surface={s} mode={mode} />}
         </group>
       ))}
       {selCell && <SelectedCell surface={selSurface} cell={selCell} />}

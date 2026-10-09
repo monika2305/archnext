@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Camera, Database, Footprints, Grid3x3, Orbit, RotateCcw, Sparkles, SplitSquareHorizontal } from 'lucide-react'
+import { Box, Camera, Database, Footprints, Grid3x3, Orbit, RotateCcw, ShieldCheck, Sparkles, SplitSquareHorizontal } from 'lucide-react'
 import SceneViewer from '../components/SceneViewer.jsx'
 import EvidencePanel, { ClassBar, Legend } from '../components/EvidencePanel.jsx'
 import { modeB } from '../api.js'
@@ -21,13 +21,16 @@ function InputFrames({ data }) {
 }
 
 export default function SceneView({ data, scene, selection, onSelect }) {
-  const [mode, setMode] = useState('complete')
-  const [show, setShow] = useState({ points: true, cameras: scene.kind !== 'rgbd', grid: true, nbv: true })
+  const [evidenceView, setEvidenceView] = useState(false)
+  const [evidenceMode, setEvidenceMode] = useState('complete')
+  const [show, setShow] = useState({ points: true, walls: true, cameras: false, grid: false, nbv: false })
   const [walk, setWalk] = useState(false)
   const [resetKey, setResetKey] = useState(0)
   const [compare, setCompare] = useState(null)       // earlier version's scene for before/after
   const versions = data.project.versions.map((v) => v.version).filter((v) => v !== scene.version)
   const toggle = (k) => setShow((s) => ({ ...s, [k]: !s[k] }))
+
+  const effectiveMode = scene.kind === 'rgbd' ? 'clean' : (evidenceView ? evidenceMode : 'clean')
 
   useEffect(() => { setCompare(null) }, [scene.version])
   const openCompare = async (v) => setCompare(v ? await modeB.scene(data.project.id, v) : null)
@@ -35,7 +38,7 @@ export default function SceneView({ data, scene, selection, onSelect }) {
   const viewer = (sc, label) => (
     <div className="relative h-full min-h-0 rounded-2xl overflow-hidden border border-line bg-white">
       {label && <div className="absolute top-2 left-2 z-10 glass rounded-lg px-2.5 h-7 flex items-center text-[12px] font-medium">{label}</div>}
-      <SceneViewer scene={sc} mode={mode} show={show} selection={selection} onSelect={onSelect} walk={walk} resetKey={resetKey} />
+      <SceneViewer scene={sc} mode={effectiveMode} show={show} selection={selection} onSelect={onSelect} walk={walk} resetKey={resetKey} />
       {label && sc.summary && <div className="absolute bottom-2 left-2 right-2 z-10 glass rounded-lg px-2.5 py-1.5"><ClassBar shares={sc.summary.shares} /></div>}
     </div>
   )
@@ -43,15 +46,64 @@ export default function SceneView({ data, scene, selection, onSelect }) {
   return (
     <div className="h-full p-4 flex flex-col gap-3 min-h-0">
       <div className="card px-2 py-1.5 flex items-center gap-1.5 flex-wrap">
-        {scene.kind !== 'rgbd' && <div className="seg" role="group" aria-label="Display">
-          {DISPLAY_MODES.map((m) => <button key={m.key} data-active={mode === m.key} onClick={() => setMode(m.key)}>{m.label}</button>)}
-        </div>}
-        {scene.kind === 'rgbd' && <span className="chip bg-accent-soft text-accent-dark ml-1"><Database size={12} />RGB-D sensor demo — depth camera + recorded poses, not video-only</span>}
+        {scene.kind !== 'rgbd' && (
+          <div className="seg" role="group" aria-label="Viewer style">
+            <button
+              data-active={!evidenceView}
+              onClick={() => {
+                setEvidenceView(false)
+                setShow((s) => ({ ...s, grid: false, cameras: false, nbv: false }))
+              }}
+              title="Clean architectural 3D view without completion debug overlays"
+            >
+              <Box size={13} />Clean 3D
+            </button>
+            <button
+              data-active={evidenceView}
+              onClick={() => {
+                setEvidenceView(true)
+                setShow((s) => ({ ...s, grid: true }))
+              }}
+              title="Inspect VisionTrust observed, uncertain and generated regions"
+            >
+              <ShieldCheck size={13} />Evidence View
+            </button>
+          </div>
+        )}
+
+        {evidenceView && scene.kind !== 'rgbd' && (
+          <div className="seg ml-1" role="group" aria-label="Evidence Display">
+            {DISPLAY_MODES.map((m) => (
+              <button
+                key={m.key}
+                data-active={evidenceMode === m.key}
+                onClick={() => setEvidenceMode(m.key)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {scene.kind === 'rgbd' && (
+          <span className="chip bg-accent-soft text-accent-dark ml-1">
+            <Database size={12} />RGB-D sensor demo — depth camera + recorded poses, not video-only
+          </span>
+        )}
+
         <span className="w-px h-5 bg-line mx-1" />
         <button className="toggle-chip" data-on={show.points} onClick={() => toggle('points')}><Sparkles size={13} />Points</button>
+        {scene.surfaces?.length > 0 && (
+          <button className="toggle-chip" data-on={show.walls} onClick={() => toggle('walls')}><Box size={13} />Room layout</button>
+        )}
         <button className="toggle-chip" data-on={show.cameras} onClick={() => toggle('cameras')}><Camera size={13} />Camera path</button>
-        <button className="toggle-chip" data-on={show.grid} onClick={() => toggle('grid')}><Grid3x3 size={13} />Cells</button>
-        {scene.nbv?.recommendations?.length > 0 && <button className="toggle-chip" data-on={show.nbv} onClick={() => toggle('nbv')}><Camera size={13} />NextBestView</button>}
+        {evidenceView && (
+          <button className="toggle-chip" data-on={show.grid} onClick={() => toggle('grid')}><Grid3x3 size={13} />Cells</button>
+        )}
+        {scene.nbv?.recommendations?.length > 0 && (
+          <button className="toggle-chip" data-on={show.nbv} onClick={() => toggle('nbv')}><Camera size={13} />NextBestView</button>
+        )}
+
         <div className="ml-auto flex items-center gap-1.5">
           <div className="seg">
             <button data-active={!walk} onClick={() => setWalk(false)}><Orbit size={13} />Orbit</button>
@@ -84,8 +136,40 @@ export default function SceneView({ data, scene, selection, onSelect }) {
             </div>
           ) : (
             <>
-              <Legend mode={mode} />
-              <EvidencePanel scene={scene} projectId={data.project.id} selection={selection} scale={data.project.scale} />
+              {!evidenceView ? (
+                <div className="space-y-3 text-[12.5px]">
+                  <div className="card-title flex items-center gap-1.5">
+                    <Box size={14} className="text-accent" />Reconstructed Room
+                  </div>
+                  <p className="text-ink-soft">
+                    Reconstructed from video footage. Clean 3D view displays the room boundaries and 3D points without debug overlays.
+                  </p>
+                  <div className="p-2.5 rounded-lg bg-paper border border-line space-y-1.5 text-[12px]">
+                    <div className="flex justify-between text-ink-soft">
+                      <span>Room surfaces</span>
+                      <span className="font-semibold text-ink">{scene.surfaces?.length || 0} (floor, walls, ceiling)</span>
+                    </div>
+                    <div className="flex justify-between text-ink-soft">
+                      <span>Reconstructed points</span>
+                      <span className="font-semibold text-ink">{((scene.points?.xyz?.length || 0) / 3).toLocaleString()}</span>
+                    </div>
+                    {scene.cameras?.length > 0 && (
+                      <div className="flex justify-between text-ink-soft">
+                        <span>Posed keyframes</span>
+                        <span className="font-semibold text-ink">{scene.cameras.length}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="text-[11.5px] text-ink-mute">
+                    Switch to <button onClick={() => { setEvidenceView(true); setShow((s) => ({ ...s, grid: true })); }} className="text-accent hover:underline font-medium cursor-pointer">Evidence View</button> to inspect VisionTrust cell classifications and confidence heatmap.
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <Legend mode={evidenceMode} />
+                  <EvidencePanel scene={scene} projectId={data.project.id} selection={selection} scale={data.project.scale} />
+                </>
+              )}
             </>
           )}
           <InputFrames data={data} />
