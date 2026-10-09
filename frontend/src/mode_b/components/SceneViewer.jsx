@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { Line, OrbitControls } from '@react-three/drei'
+import { Line, OrbitControls, useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
 import { cellCorners, sceneBounds, surfaceArrays } from '../lib/sceneGeometry.js'
 
@@ -109,6 +109,31 @@ function Points({ points, minViews = 0 }) {
         : <pointsMaterial size={3.5} sizeAttenuation={false} vertexColors />}
     </points>
   )
+}
+
+// RGB-D demo: triangle mesh triangulated from the measured depth maps (served as GLB). Its vertex colours are the
+// photo's sRGB values, converted to linear once for correct display; the file itself is not changed.
+function MeasuredMesh({ url }) {
+  const { scene } = useGLTF(url)
+  const obj = useMemo(() => {
+    const o = scene.clone(true)
+    o.traverse((m) => {
+      if (!m.isMesh) return
+      const c = m.geometry.getAttribute('color')
+      if (c && !m.geometry.userData.linear) {
+        const a = new Float32Array(c.count * 3)
+        for (let i = 0; i < c.count; i++) { a[3 * i] = c.getX(i) ** 2.2; a[3 * i + 1] = c.getY(i) ** 2.2; a[3 * i + 2] = c.getZ(i) ** 2.2 }
+        m.geometry = m.geometry.clone()
+        m.geometry.setAttribute('color', new THREE.BufferAttribute(a, 3))
+        m.geometry.userData.linear = true
+        m.geometry.computeVertexNormals()
+      }
+      m.material = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide })
+      m.raycast = () => null
+    })
+    return o
+  }, [scene])
+  return <primitive object={obj} />
 }
 
 function Cameras({ cameras, size }) {
@@ -222,7 +247,7 @@ function Walk({ bounds, box }) {
   return null
 }
 
-export default function SceneViewer({ scene, mode = 'clean', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0 }) {
+export default function SceneViewer({ scene, mode = 'clean', show = {}, selection, onSelect, nbvRank = 1, walk = false, resetKey = 0, rgbdView = null, meshUrl = null }) {
   const bounds = useMemo(() => sceneBounds(scene), [scene])
   const controls = useRef()
   const rec = scene.nbv?.recommendations?.find((r) => r.rank === nbvRank)
@@ -236,9 +261,14 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
       <ambientLight intensity={0.9} />
       <directionalLight position={[bounds.center[0] + bounds.size, bounds.center[1] + bounds.size * 1.8, bounds.center[2] + bounds.size]} intensity={0.65} />
       <directionalLight position={[bounds.center[0] - bounds.size, bounds.center[1] + bounds.size * 0.8, bounds.center[2] - bounds.size]} intensity={0.3} color="#F5EFE6" />
-      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense} />
+      <Rig bounds={bounds} resetKey={resetKey} controls={controls} walk={walk} startCam={startCam} dense={!!scene.points?.dense && !scene.mesh} />
       {walk ? <Walk bounds={bounds} box={scene.layout?.box} /> : <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.12} />}
-      {show.walls !== false && scene.surfaces.map((s) => (
+      {rgbdView && meshUrl && rgbdView !== 'points' && <Suspense fallback={null}><MeasuredMesh url={meshUrl} /></Suspense>}
+      {rgbdView && rgbdView !== 'points' && rgbdView !== 'measured' && scene.surfaces.map((s) => (
+        <Surface key={s.id} surface={s} mode={rgbdView === 'complete' ? 'generated' : 'complete'} selected={selection?.surface === s.id}
+                 onPick={(surface, cell) => onSelect?.({ surface, cell: cell ? { i: cell.i, j: cell.j } : null })} />
+      ))}
+      {!rgbdView && show.walls !== false && scene.surfaces.map((s) => (
         <group key={s.id}>
           <Surface surface={s} mode={mode} selected={selection?.surface === s.id}
                    onPick={(surface, cell) => onSelect?.({ surface, cell: cell ? { i: cell.i, j: cell.j } : null })} />
@@ -247,7 +277,7 @@ export default function SceneViewer({ scene, mode = 'clean', show = {}, selectio
         </group>
       ))}
       {selCell && <SelectedCell surface={selSurface} cell={selCell} />}
-      {show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense && show.clean !== false ? 3 : 0} />}
+      {(!rgbdView || rgbdView === 'points') && show.points !== false && scene.points?.xyz?.length > 0 && <Points points={scene.points} minViews={scene.points?.dense && show.clean !== false ? 3 : 0} />}
       {show.cameras !== false && scene.cameras?.length > 0 && <Cameras cameras={scene.cameras} size={bounds.size} />}
       {show.nbv && rec && <NbvMarker rec={rec} size={bounds.size} />}
     </Canvas>

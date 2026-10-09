@@ -221,7 +221,12 @@ def run_rgbd(pid: str, sequence: str, status) -> str:
                          "registered": dg["frames_fused"], "summary": {"observed": None, "generated": None, "reliable": None}}]
     proj["current_version"] = 1
     projects.save(pid, proj)
-    return f"RGB-D sensor reconstruction: {dg['points_kept']:,} points"
+    try:                                                   # measured mesh + labelled shell as version 2
+        from . import rgbd_mesh
+        rgbd_mesh.add_version(pid)
+    except Exception as exc:  # noqa: BLE001  (the point-cloud version stays available)
+        return f"RGB-D sensor reconstruction: {dg['points_kept']:,} points (mesh not built: {exc})"
+    return f"RGB-D sensor reconstruction: {dg['points_kept']:,} points + measured mesh"
 
 
 def run(action: str, pid: str, args: list[str], status) -> str:

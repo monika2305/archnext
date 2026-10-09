@@ -85,7 +85,7 @@ def fuse(name: str, stride: int = 8, pix: int = 3, voxel: float = 0.025, min_vie
         cam_out.append({"name": f"frame {i}", "index": i, "time": round(seq.rgb[i][0] - seq.rgb[0][0], 2),
                         "center": np.round(M @ T[:3, 3] - c, 4).tolist(),
                         "forward": np.round(R_wc[:, 2], 4).tolist(), "up": np.round(-R_wc[:, 1], 4).tolist()})
-    return {"points": P, "colors": col.round().astype(np.uint8), "views": views, "cameras": cam_out, "frames_used": used,
+    return {"points": P, "centre": c, "colors": col.round().astype(np.uint8), "views": views, "cameras": cam_out, "frames_used": used,
             "seq": seq, "stats": {"frames_fused": len(used), "measurements": int(len(K)), "voxels": int(len(uk)),
                                   "points_kept": int(len(P)), "voxel_m": voxel, "min_views": min_views,
                                   "extent_m": np.round(np.ptp(P, axis=0), 2).tolist()}}

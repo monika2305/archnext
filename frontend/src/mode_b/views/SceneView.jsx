@@ -25,6 +25,9 @@ export default function SceneView({ data, scene, selection, onSelect }) {
   const [evidenceMode, setEvidenceMode] = useState('complete')
   const [show, setShow] = useState({ points: true, walls: true, cameras: false, grid: false, nbv: false })
   const [walk, setWalk] = useState(false)
+  // RGB-D demo with a measured mesh: Complete room (mesh + generated shell cells) / Measured only / Evidence / Points
+  const [rgbdView, setRgbdView] = useState(scene.kind === 'rgbd' && scene.mesh ? 'complete' : null)
+  const meshUrl = scene.kind === 'rgbd' && scene.mesh ? `/api/mode-b/projects/${data.project.id}/mesh.glb?version=${scene.version}` : null
   const [resetKey, setResetKey] = useState(0)
   const [compare, setCompare] = useState(null)       // earlier version's scene for before/after
   const versions = data.project.versions.map((v) => v.version).filter((v) => v !== scene.version)
@@ -38,7 +41,8 @@ export default function SceneView({ data, scene, selection, onSelect }) {
   const viewer = (sc, label) => (
     <div className="relative h-full min-h-0 rounded-2xl overflow-hidden border border-line bg-white">
       {label && <div className="absolute top-2 left-2 z-10 glass rounded-lg px-2.5 h-7 flex items-center text-[12px] font-medium">{label}</div>}
-      <SceneViewer scene={sc} mode={effectiveMode} show={show} selection={selection} onSelect={onSelect} walk={walk} resetKey={resetKey} />
+      <SceneViewer scene={sc} mode={effectiveMode} show={show} selection={selection} onSelect={onSelect} walk={walk} resetKey={resetKey}
+                   rgbdView={sc === scene && sc.mesh ? rgbdView : null} meshUrl={sc === scene ? meshUrl : null} />
       {label && sc.summary && <div className="absolute bottom-2 left-2 right-2 z-10 glass rounded-lg px-2.5 py-1.5"><ClassBar shares={sc.summary.shares} /></div>}
     </div>
   )
@@ -85,6 +89,12 @@ export default function SceneView({ data, scene, selection, onSelect }) {
           </div>
         )}
 
+        {scene.kind === 'rgbd' && scene.mesh && (
+          <div className="seg" role="group" aria-label="RGB-D display">
+            {[['complete', 'Complete room'], ['measured', 'Measured only'], ['evidence', 'Evidence view'], ['points', 'Points']].map(([k, l]) => (
+              <button key={k} data-active={rgbdView === k} onClick={() => setRgbdView(k)}>{l}</button>))}
+          </div>
+        )}
         {scene.kind === 'rgbd' && (
           <span className="chip bg-accent-soft text-accent-dark ml-1">
             <Database size={12} />RGB-D sensor demo — depth camera + recorded poses, not video-only
@@ -93,8 +103,8 @@ export default function SceneView({ data, scene, selection, onSelect }) {
 
         <span className="w-px h-5 bg-line mx-1" />
         <button className="toggle-chip" data-on={show.points} onClick={() => toggle('points')}><Sparkles size={13} />Points</button>
-        {scene.kind === 'rgbd' && <button className="toggle-chip" data-on={show.clean !== false} onClick={() => setShow((x) => ({ ...x, clean: x.clean === false }))} title="Hide points measured by only 2 frames (display only)">Hide noise</button>}
-        {scene.surfaces?.length > 0 && (
+        {scene.kind === 'rgbd' && (!scene.mesh || rgbdView === 'points') && <button className="toggle-chip" data-on={show.clean !== false} onClick={() => setShow((x) => ({ ...x, clean: x.clean === false }))} title="Hide points measured by only 2 frames (display only)">Hide noise</button>}
+        {scene.surfaces?.length > 0 && scene.kind !== 'rgbd' && (
           <button className="toggle-chip" data-on={show.walls} onClick={() => toggle('walls')}><Box size={13} />Room layout</button>
         )}
         <button className="toggle-chip" data-on={show.cameras} onClick={() => toggle('cameras')}><Camera size={13} />Camera path</button>
@@ -132,6 +142,13 @@ export default function SceneView({ data, scene, selection, onSelect }) {
             <div className="space-y-2 text-[12.5px]" data-testid="rgbd-source">
               <div className="chip bg-accent-soft text-accent-dark"><Database size={12} />RGB-D sensor demo</div>
               <p className="text-ink-soft">{scene.source.note}</p>
+              {scene.mesh && (
+                <div className="space-y-1 text-[12px]" data-testid="rgbd-legend">
+                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-gradient-to-r from-amber-200 to-slate-400" />Measured surface: {scene.mesh.triangles.toLocaleString()} triangles from {scene.mesh.frames} depth frames</div>
+                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-[#8B5CF6]" />Generated: room shell where no frame saw the room (Complete room)</div>
+                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm bg-[#10B981]" /><span className="w-2.5 h-2.5 rounded-sm bg-[#F59E0B]" />Evidence view: observed / uncertain shell cells</div>
+                </div>
+              )}
               <div className="text-ink-mute">{scene.method.dense}. Depth: {scene.source.depth}; poses: {scene.source.poses}. Units: metres.</div>
               <div className="text-ink-mute">{scene.diagnostics.points_kept.toLocaleString()} points · room extent {scene.diagnostics.extent_m.join(' × ')} m</div>
             </div>

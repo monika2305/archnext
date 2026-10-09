@@ -209,6 +209,17 @@ def set_scale(pid: str, body: ScaleBody):
     return {"scale": proj["scale"]}
 
 
+@router.get("/projects/{pid}/mesh.glb")
+def mesh_file(pid: str, version: int | None = None):
+    """Measured triangle mesh of an RGB-D demo version (depth-sensor data), if it has one."""
+    proj = _project(pid)
+    v = version if version is not None else proj.get("current_version")
+    f = projects.version_dir(pid, v) / "mesh.glb" if v is not None else None
+    if f is None or not f.is_file():
+        raise HTTPException(404, "This reconstruction has no measured mesh.")
+    return FileResponse(f, media_type="model/gltf-binary", filename=f"{proj['name'][:40]}-measured-mesh.glb".replace(" ", "_").replace(":", ""))
+
+
 @router.get("/projects/{pid}/export.glb")
 def export_glb(pid: str, version: int | None = None, include: str = "all"):
     """GLB of the reconstructed (and, unless include=observed, completed) room, in metres when calibrated."""
